@@ -146,10 +146,32 @@ function writeRecord(record: SubagentRunRecord, storeDir: string): void {
 }
 
 /** Read one record.json; skip missing/corrupt records silently. */
+const _num = (v: unknown): number =>
+	(typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/** Fill in missing/non-numeric record fields so consumers never hit undefined. */
+function normalizeRecord(rec: SubagentRunRecord): SubagentRunRecord {
+	const u = (rec.usage ?? {}) as Partial<SubagentRunUsage>;
+	rec.usage = {
+		input: _num(u.input),
+		output: _num(u.output),
+		cacheRead: _num(u.cacheRead),
+		cacheWrite: _num(u.cacheWrite),
+		cost: _num(u.cost),
+		contextTokens: _num(u.contextTokens),
+		turns: _num(u.turns),
+	};
+	rec.startedAt = _num(rec.startedAt);
+	rec.endedAt = rec.endedAt === undefined ? undefined : _num(rec.endedAt);
+	rec.durationMs = rec.durationMs === undefined ? undefined : _num(rec.durationMs);
+	rec.exitCode = rec.exitCode === undefined ? undefined : _num(rec.exitCode);
+	return rec;
+}
+
 function readRecord(file: string): SubagentRunRecord | undefined {
 	try {
 		const data = JSON.parse(fs.readFileSync(file, "utf-8"));
-		if (data && typeof data.runId === "string") return data as SubagentRunRecord;
+		if (data && typeof data.runId === "string") return normalizeRecord(data);
 	} catch {
 		/* corrupt / mid-write — skip */
 	}
