@@ -1,0 +1,16 @@
+# Dependencies / generated packages
+node_modules/
+
+# macOS cruft
+.DS_Store
+
+# Logs
+*.log
+
+# Editor / IDE incremental caches
+*.tsbuildinfo
+
+# Build output
+dist/
+build/
+.cache/
