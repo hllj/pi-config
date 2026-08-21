@@ -147,7 +147,7 @@ function writeRecord(record: SubagentRunRecord, storeDir: string): void {
 
 /** Read one record.json; skip missing/corrupt records silently. */
 const _num = (v: unknown): number =>
-	(typeof v === "number" && Number.isFinite(v) ? v : 0);
+	typeof v === "number" && Number.isFinite(v) ? v : 0;
 
 /** Fill in missing/non-numeric record fields so consumers never hit undefined. */
 function normalizeRecord(rec: SubagentRunRecord): SubagentRunRecord {
@@ -163,7 +163,8 @@ function normalizeRecord(rec: SubagentRunRecord): SubagentRunRecord {
 	};
 	rec.startedAt = _num(rec.startedAt);
 	rec.endedAt = rec.endedAt === undefined ? undefined : _num(rec.endedAt);
-	rec.durationMs = rec.durationMs === undefined ? undefined : _num(rec.durationMs);
+	rec.durationMs =
+		rec.durationMs === undefined ? undefined : _num(rec.durationMs);
 	rec.exitCode = rec.exitCode === undefined ? undefined : _num(rec.exitCode);
 	return rec;
 }
