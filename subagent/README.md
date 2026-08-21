@@ -1,11 +1,11 @@
-# Subagent Extension — with pi-lens Code Intelligence
+# Subagent Extension
 
-Delegate tasks to specialized subagents with isolated context windows. Enhanced with **pi-lens** code intelligence tools (`lsp_diagnostics`, `project_report`, `module_report`, `symbol_search`, etc.).
+Delegate tasks to specialized subagents with isolated context windows.
 
 ## Features
 
 - **Isolated context**: Each subagent runs in a separate `pi` process
-- **pi-lens integration**: Every agent has access to relevant pi-lens tools for code analysis
+
 - **Streaming output**: See tool calls and progress as they happen
 - **Parallel streaming**: All parallel tasks stream updates simultaneously
 - **Markdown rendering**: Final output rendered with proper formatting (expanded view)
@@ -36,7 +36,7 @@ pi-config/subagent/          # Symlinked to ~/.pi/agent/extensions/subagent
 │   ├── scout.md              # Fast codebase recon with pi-lens
 │   ├── planner.md            # Implementation plans with pi-lens
 │   ├── reviewer.md           # Code review with pi-lens diagnostics
-│   └── worker.md             # General-purpose with pi-lens verification
+│   └── worker.md             # Test-first (TDD) implementation with pi-lens verification
 ├── prompts/                  # Workflow prompts ★ NOW CO-LOCATED HERE
 │   ├── implement.md          # scout → planner → worker
 │   ├── scout-and-plan.md     # scout → planner (no implementation)
@@ -47,17 +47,6 @@ Sibling links:
   ~/.pi/agent/agents/*.md    → pi-config/subagent/agents/*.md
   ~/.pi/agent/prompts/*.md   → pi-config/subagent/prompts/*.md
 ```
-
-## Enhanced Agents with pi-lens Tools
-
-Each agent definition now includes pi-lens tools relevant to its role:
-
-| Agent | pi-lens Tools | Why |
-| ------- | -------------- | ----- |
-| **scout** | `project_report`, `module_report`, `symbol_search`, `lsp_diagnostics`, `lsp_navigation`, `ast_grep_search`, `read_enclosing`, `read_symbol` | Project orientation → symbol discovery → file drill-down → error checking |
-| **planner** | `project_report`, `module_report`, `symbol_search`, `lsp_diagnostics`, `read_enclosing`, `read_symbol` | Verify structure, check pre-existing issues, understand dependencies |
-| **reviewer** | `lsp_diagnostics`, `lens_diagnostics`(full), `project_report`, `module_report`, `symbol_search`, `ast_grep_search` | Auto-detect type/lint errors, security patterns, circular deps, dead code |
-| **worker** | `lsp_diagnostics`, `lens_diagnostics`, `module_report`, `symbol_search`, `read_symbol` | Post-edit verification — catch errors immediately |
 
 ## Agent Definitions
 
@@ -76,21 +65,7 @@ System prompt for the agent goes here.
 
 ### `tools` field
 
-Controls which tools the subagent can call. pi-lens tools are:
-
-- `pi_lens_activate_tools` — **must be included** if the agent uses `lsp_navigation` or `ast_grep_search`/`ast_grep_replace` (those need activation first)
-- `lsp_diagnostics` — type/lint errors (server scope)
-- `lens_diagnostics` — broader scan (dead-code, circular deps, secrets, CVEs)
-- `project_report` — project-level orientation
-- `module_report` — file-level outline + who-uses-this
-- `symbol_search` — rank-based identifier search
-- `read_enclosing` — read around a line number
-- `read_symbol` — read one symbol body
-- `lsp_navigation` — go-to-def/references (requires `pi_lens_activate_tools` too)
-- `ast_grep_search` — semantic AST search (requires `pi_lens_activate_tools` too)
-- `ast_grep_replace` — AST-aware code rewrite
-- `ast_grep_outline` — syntax-only file structure
-- `lens_diagnostic_mark` — record disposition for a diagnostic
+Controls which tools the subagent can call. Available tools include built-ins (`read`, `bash`, `edit`, `write`, etc.) and pi-lens code intelligence tools (`lsp_diagnostics`, `project_report`, `module_report`, `symbol_search`, etc.). See the agent definitions in `agents/` for per-agent tool assignments.
 
 ### `model` field
 
@@ -114,11 +89,11 @@ When omitted, the subagent inherits the dispatching session's active model and t
 
 ## Workflow Prompts
 
-| Prompt | Flow | pi-lens Value |
+| Prompt | Flow | Description |
 | -------- | ------ | --------------- |
-| `/implement <query>` | scout → planner → worker | scout uses `project_report`+`symbol_search`, planner uses `module_report`, worker uses `lsp_diagnostics` for verification |
+| `/implement <query>` | scout → planner → worker | scout finds code, planner creates plan, worker implements **test-first (TDD)** |
 | `/scout-and-plan <query>` | scout → planner | Understand codebase before deciding on changes |
-| `/implement-and-review <query>` | worker → reviewer → worker | Worker implements → reviewer runs `lsp_diagnostics`+`lens_diagnostics` → worker fixes issues |
+| `/implement-and-review <query>` | worker → reviewer → worker | worker implements **test-first (TDD)** → reviewer checks → worker fixes issues |
 
 ## Usage
 
