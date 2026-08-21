@@ -74,6 +74,21 @@ import {
 	renderWorkflowCollapsed,
 	renderWorkflowExpanded,
 } from "./workflow-renderer.ts";
+import {
+	type RunStatus,
+	type SubagentRunRecord,
+	formatDuration,
+	getRun,
+	listRuns,
+	pruneStore,
+	readRunTranscript,
+	reconcileOrphans,
+	recordStart,
+	recordUpdate,
+	recordEnd,
+	resolveStoreDir,
+} from "./session-store.ts";
+import { renderRunsScreen, type RunsTableRow } from "./runs-screen.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -83,6 +98,11 @@ const PER_CONTEXT_FILE_CAP = 50 * 1024;
 const RUNNING_AGENT_PRUNE_MS = 10 * 60 * 1000;
 const SUBAGENTS_WIDGET_ID = "subagents";
 const SUBAGENTS_STATUS_ID = "subagents";
+const RUNS_DEFAULT_LIMIT = 50;
+const RUNS_TRANSCRIPT_MAX_MESSAGES = 30;
+const RUNS_TRANSCRIPT_MAX_BYTES = 20 * 1024;
+/** Parent session pointer payload caps (task + output summary). */
+const SESSION_POINTER_TRUNCATE = 500;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -356,6 +376,32 @@ interface DispatchDefaults {
 	thinkingLevel?: ThinkingLevel;
 }
 
+/** Session-scoped data threaded into runSingleAgent for on-disk run records. */
+interface SessionLink {
+	/** Resolved subagent run store directory. */
+	storeDir: string;
+	/** Parent (broker) session id. */
+	sessionId: string;
+	/** Parent session file path. */
+	sessionFile: string;
+}
+
+/**
+ * Build a SessionLink from an extension context (tools and commands both expose
+ * sessionManager). sessionDir may be undefined for in-memory sessions.
+ */
+function buildSessionLink(sm?: {
+	getSessionDir?(): string | undefined;
+	getSessionId?(): string | undefined;
+	getSessionFile?(): string | undefined;
+}): SessionLink {
+	return {
+		storeDir: resolveStoreDir(sm?.getSessionDir?.()),
+		sessionId: sm?.getSessionId?.() ?? "",
+		sessionFile: sm?.getSessionFile?.() ?? "",
+	};
+}
+
 export type RunningAgentMode = "single" | "parallel" | "chain" | "workflow";
 
 export interface RunningAgentInfo {
@@ -365,9 +411,11 @@ export interface RunningAgentInfo {
 	step?: number;
 	mode: RunningAgentMode;
 	startedAt: number;
-	status: "running" | "completed" | "failed";
+	status: "running" | "completed" | "failed" | "aborted";
 	exitCode?: number;
 	settledAt?: number;
+	/** OS pid of the subagent pi process, once spawned. */
+	pid?: number;
 }
 
 /** Minimal UI surface needed to refresh the running-subagents widget. */
@@ -402,6 +450,12 @@ interface RunAgentOptions<TDetails = SubagentDetails> {
 	onSpawn?: (info: RunningAgentInfo) => void;
 	/** Invoked once the subagent has settled (completed/failed/timed out). */
 	onSettled?: (info: RunningAgentInfo) => void;
+	/** Session-scoped linkage (store dir + parent session) for the run record. */
+	session?: SessionLink;
+	/** Workflow id this dispatch belongs to (workflow mode only). */
+	workflowId?: string;
+	/** Extension API — used to append the parent-session pointer (pi.appendEntry). */
+	pi?: ExtensionAPI;
 }
 
 /** Registry of running/finished subagent processes (drives the widget + /agents). */
@@ -410,6 +464,13 @@ const runningAgents = new Map<string, RunningAgentInfo>();
 const workflows = new Map<string, WorkflowState>();
 /** Id of the most recently committed workflow (used when workflowId is omitted). */
 let lastWorkflowId: string | undefined;
+/** Runs hydrated from parent-session "subagent-session" pointers (last-wins by runId). */
+const sessionRuns = new Map<string, SubagentRunRecord>();
+/**
+ * Set by session_shutdown before killing children, so a late runEnd firing after
+ * the parent lingers does not downgrade an already-persisted "aborted" record.
+ */
+let shutdownAbortFlag = false;
 
 function generateRunningAgentId(): string {
 	return `sg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -426,6 +487,31 @@ function formatElapsed(startedAt: number): string {
 	const m = Math.floor(ms / 60000);
 	const s = Math.round((ms % 60000) / 1000);
 	return `${m}m ${s}s`;
+}
+
+/** Format a run's total duration; falls back to live elapsed for running runs. */
+function formatRunDuration(rec: SubagentRunRecord): string {
+	const ms =
+		rec.durationMs ??
+		(rec.endedAt !== undefined ? rec.endedAt - rec.startedAt : undefined);
+	if (ms === undefined) return formatElapsed(rec.startedAt);
+	return formatDuration(ms);
+}
+
+/** Color mapping for run statuses (shared by /runs screen + entry renderer). */
+function statusColor(status: string): string {
+	switch (status) {
+		case "completed":
+			return "success";
+		case "failed":
+		case "orphaned":
+			return "error";
+		case "running":
+		case "timed_out":
+			return "warning";
+		default:
+			return "muted";
+	}
 }
 
 function pruneRunningAgents(): void {
@@ -625,7 +711,7 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const args: string[] = ["--mode", "json", "-p"];
 	const inheritsDispatchConfig = !agent.model;
 	const model = agent.model ?? dispatchDefaults.model;
 	if (model) args.push("--model", model);
@@ -645,16 +731,57 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 	// Running-agents registry entry (widget + /agents command).
 	const runId = generateRunningAgentId();
 	const startedAt = Date.now();
+
+	// Persistent run store: durable record.json + the child's own session dir.
+	const mode = opts.mode ?? "single";
+	const session = opts.session;
+	const storeDir = session?.storeDir ?? resolveStoreDir();
+	const runDir = path.join(storeDir, runId);
+	const runRec: SubagentRunRecord = {
+		runId,
+		agent: agentName,
+		agentSource: agent.source,
+		task,
+		model: model ?? "",
+		mode,
+		workflowId: opts.workflowId,
+		step,
+		parentSessionId: session?.sessionId ?? "",
+		parentSessionFile: session?.sessionFile ?? "",
+		status: "running",
+		startedAt,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: 0,
+			contextTokens: 0,
+			turns: 0,
+		},
+	};
+	let runSettled = false;
+
+	// The child writes its own pi session into runDir (real session file per run).
+	args.push("--session-dir", runDir);
+	args.push("--name", `subagent/${agentName}`);
+
 	const runInfo: RunningAgentInfo = {
 		id: runId,
 		agent: agentName,
 		task: truncateTask(task),
 		step,
-		mode: opts.mode ?? "single",
+		mode,
 		startedAt,
 		status: "running",
 	};
 	runningAgents.set(runId, runInfo);
+	// Durable "running" record before spawn (pid is filled in right after spawn).
+	try {
+		recordStart(runRec, storeDir);
+	} catch {
+		/* ignore */
+	}
 	if (opts.onSpawn) {
 		try {
 			opts.onSpawn(runInfo);
@@ -701,12 +828,72 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 		}
 	};
 
+	let wasAborted = false;
+	let timedOut = false;
+
+	/** One-shot durable run-record finalization + parent-session pointer. */
+	const runEnd = (runStatus: RunStatus) => {
+		if (runSettled) return;
+		runSettled = true;
+		// If the session was shut down, a late finalization must not downgrade the
+		// already-persisted "aborted" status to "failed" (the child was killed).
+		if (shutdownAbortFlag) runStatus = "aborted";
+		const endedAt = Date.now();
+		runRec.status = runStatus;
+		runRec.endedAt = endedAt;
+		runRec.durationMs = endedAt - startedAt;
+		runRec.exitCode = currentResult.exitCode;
+		runRec.usage = {
+			input: currentResult.usage.input,
+			output: currentResult.usage.output,
+			cacheRead: currentResult.usage.cacheRead,
+			cacheWrite: currentResult.usage.cacheWrite,
+			cost: currentResult.usage.cost,
+			contextTokens: currentResult.usage.contextTokens,
+			turns: currentResult.usage.turns,
+		};
+		runRec.outputSummary = sliceUtf8(
+			getFinalOutput(currentResult.messages) ?? "",
+			2000,
+		);
+		if (currentResult.errorMessage) {
+			runRec.error = sliceUtf8(currentResult.errorMessage, 2000);
+		} else if (currentResult.stderr) {
+			runRec.error = sliceUtf8(currentResult.stderr, 2000);
+		}
+		try {
+			recordEnd(runRec, storeDir);
+		} catch {
+			/* ignore */
+		}
+		// Parent-session pointer: ONE compact entry per run (full record minus
+		// task/outputSummary truncated to keep session growth bounded).
+		if (opts.pi) {
+			try {
+				opts.pi.appendEntry("subagent-session", {
+					...runRec,
+					task: sliceUtf8(runRec.task, SESSION_POINTER_TRUNCATE),
+					outputSummary: runRec.outputSummary
+						? sliceUtf8(runRec.outputSummary, SESSION_POINTER_TRUNCATE)
+						: undefined,
+				});
+			} catch {
+				/* ignore */
+			}
+		}
+	};
+
 	const settle = (status: "completed" | "failed") => {
 		runInfo.status = status;
 		runInfo.exitCode = currentResult.exitCode;
 		runInfo.settledAt = Date.now();
 		runningAgents.set(runId, runInfo);
 		pruneRunningAgents();
+		// Durable record: completed/failed stay; timedOut → timed_out; aborted → aborted.
+		let runStatus: RunStatus = status;
+		if (timedOut) runStatus = "timed_out";
+		else if (wasAborted) runStatus = "aborted";
+		runEnd(runStatus);
 		if (opts.onSettled) {
 			try {
 				opts.onSettled(runInfo);
@@ -781,17 +968,32 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 			taskPrompt = `--- Messages addressed to you ---\n${inbox}\n--- End of messages ---\n\n${taskPrompt}`;
 		}
 		args.push(`Task: ${taskPrompt}`);
-		let wasAborted = false;
-		let timedOut = false;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
+			const childEnv = {
+				...process.env,
+				...(agent.env ?? {}),
+				PI_SUBAGENT_RUN_ID: runId,
+				...(session?.sessionFile
+					? { PI_PARENT_SESSION_FILE: session.sessionFile }
+					: {}),
+			};
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: baseCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: agent.env ? { ...process.env, ...agent.env } : undefined,
+				env: childEnv,
 			});
+			// Track the pid in the registry + durable record right after spawn.
+			runInfo.pid = proc.pid;
+			runningAgents.set(runId, runInfo);
+			runRec.pid = proc.pid;
+			try {
+				recordUpdate(runRec, storeDir);
+			} catch {
+				/* ignore */
+			}
 			let buffer = "";
 			let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -878,6 +1080,13 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 		});
 
 		currentResult.exitCode = exitCode;
+		// Discover the child's own session JSONL inside runDir (written by the
+		// child pi via --session-dir; present once the process has closed). Skip the
+		// wait entirely when the child already closed with an error (a session file
+		// may never have been written); otherwise a short bounded poll (~500ms).
+		runRec.sessionFile = await waitForSessionFile(runDir, {
+			exitCode: currentResult.exitCode,
+		});
 		if (timedOut) {
 			currentResult.timedOut = true;
 			if (currentResult.exitCode === 0) currentResult.exitCode = 124;
@@ -922,6 +1131,10 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 		if (wasAborted) throw new Error("Subagent was aborted");
 		return currentResult;
 	} finally {
+		// Crash/exception safety: if settle() never ran (e.g. an unexpected
+		// throw mid-flight), still persist a terminal record — only a genuine
+		// abort is recorded as "aborted", anything else is "failed".
+		if (!runSettled) runEnd(wasAborted ? "aborted" : "failed");
 		if (tmpPromptPath)
 			try {
 				fs.unlinkSync(tmpPromptPath);
@@ -937,6 +1150,43 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 	}
 }
 
+/** Find the child session JSONL in a run dir (lazily discovered, best-effort). */
+function discoverSessionFile(runDir: string): string | undefined {
+	try {
+		const files = fs
+			.readdirSync(runDir)
+			.filter((f: string) => f.endsWith(".jsonl") && !f.endsWith(".tmp"))
+			.sort();
+		if (files.length > 0) return path.join(runDir, files[files.length - 1]);
+	} catch {
+		/* ignore */
+	}
+	return undefined;
+}
+
+/**
+ * Poll runDir for the child's first session JSONL after the process closes
+ * (the child flushes its session file just before exit). Bounded best-effort.
+ *
+ * When `exitCode !== 0` the child already closed with an error and may never
+ * have flushed a session file, so the wait is skipped entirely. Preserves the
+ * instant-success path when the file appears on the first probe.
+ */
+async function waitForSessionFile(
+	runDir: string,
+	opts: { timeoutMs?: number; exitCode?: number } = {},
+): Promise<string | undefined> {
+	const timeoutMs = opts.timeoutMs ?? 500;
+	if (opts.exitCode !== undefined && opts.exitCode !== 0) return undefined;
+	const deadline = Date.now() + timeoutMs;
+	let found = discoverSessionFile(runDir);
+	while (!found && Date.now() < deadline) {
+		await new Promise((r) => setTimeout(r, 100));
+		found = discoverSessionFile(runDir);
+	}
+	return found;
+}
+
 /** Everything a workflow step-execution loop needs from the dispatching tool. */
 interface WorkflowRunContext {
 	pi: ExtensionAPI;
@@ -949,6 +1199,8 @@ interface WorkflowRunContext {
 	agents: AgentConfig[];
 	signal?: AbortSignal;
 	ui?: UiHooks;
+	/** Session-scoped linkage threaded into runSingleAgent for run records. */
+	session?: SessionLink;
 	onUpdate?: (state: WorkflowState) => void;
 }
 
@@ -1001,10 +1253,13 @@ async function executeSingleWorkflowStep(
 				step: stepIndex + 1,
 				signal: exec.signal,
 				mode: "workflow",
+				workflowId: state.id,
+				session: exec.session,
 				timeoutMs: step.timeoutMs,
 				contextFiles: step.contextFiles,
 				expect: step.expect,
 				ui: exec.ui,
+				pi: exec.pi,
 				makeDetails: (results) => ({
 					mode: "workflow" as const,
 					agentScope: "user" as const,
@@ -1093,8 +1348,11 @@ async function executeSingleWorkflowStep(
 					step: stepIndex + 1,
 					signal: exec.signal,
 					mode: "workflow",
+					workflowId: state.id,
+					session: exec.session,
 					timeoutMs: step.timeoutMs,
 					ui: exec.ui,
+					pi: exec.pi,
 					makeDetails: (results) => ({
 						mode: "workflow" as const,
 						agentScope: "user" as const,
@@ -1913,6 +2171,88 @@ export default function (pi: ExtensionAPI) {
 			const wf = lastWfEntry.data as WorkflowState;
 			if (wf && typeof wf.id === "string") lastWorkflowId = wf.id;
 		}
+
+		// Run store: rebuild the in-session run map from parent pointers, then
+		// reconcile orphans and prune. Idempotent: re-fires on "reload" etc.
+		const storeDir = resolveStoreDir(ctx.sessionManager?.getSessionDir());
+		const runMap = new Map<string, SubagentRunRecord>();
+		for (const entry of entries) {
+			if (entry.type === "subagent-session") {
+				const rec = entry.data as SubagentRunRecord;
+				if (rec && typeof rec.runId === "string") runMap.set(rec.runId, rec);
+			}
+		}
+		sessionRuns.clear();
+		for (const rec of runMap.values()) sessionRuns.set(rec.runId, rec);
+		try {
+			reconcileOrphans(storeDir);
+		} catch {
+			/* ignore */
+		}
+		try {
+			pruneStore(undefined, undefined, storeDir);
+		} catch {
+			/* ignore */
+		}
+	});
+
+	// Feature 6.5: session_shutdown — kill live subagents + mark aborted, but
+	// ONLY on "quit". reload/new/resume/fork must not kill children.
+	pi.on("session_shutdown", (event, ctx) => {
+		if (event.reason !== "quit") return;
+		shutdownAbortFlag = true;
+		const storeDir = resolveStoreDir(ctx.sessionManager?.getSessionDir());
+		for (const info of runningAgents.values()) {
+			if (info.status !== "running") continue;
+			// Synchronous SIGTERM + bounded SIGKILL escalation: pi's quit path calls
+			// process.exit(0) immediately after this handler returns, so a setTimeout
+			// SIGKILL would be dead code. Poll kill(pid, 0) in a short loop (~200ms).
+			if (typeof info.pid === "number" && info.pid > 0) {
+				try {
+					process.kill(info.pid, "SIGTERM");
+					const pid = info.pid;
+					for (let i = 0; i < 10; i++) {
+						try {
+							process.kill(pid, 0);
+						} catch {
+							break; // already gone
+						}
+						// busy-wait ~20ms between liveness polls (bounded ~200ms total)
+						const end = Date.now() + 20;
+						while (Date.now() < end) {
+							/* spin */
+						}
+						if (i === 9) {
+							try {
+								process.kill(pid, "SIGKILL");
+							} catch {
+								/* already gone */
+							}
+						}
+					}
+				} catch {
+					/* already gone */
+				}
+			}
+			// Mark the durable record aborted (one-shot, like runEnd).
+			const rec = getRun(info.id, storeDir);
+			if (rec && rec.status === "running") {
+				rec.status = "aborted";
+				if (rec.endedAt === undefined) {
+					rec.endedAt = Date.now();
+					rec.durationMs = rec.endedAt - (rec.startedAt ?? rec.endedAt);
+				}
+				if (!rec.error) rec.error = "Aborted: pi session quit.";
+				try {
+					recordEnd(rec, storeDir);
+				} catch {
+					/* ignore */
+				}
+			}
+			info.status = "aborted";
+			info.settledAt = Date.now();
+		}
+		updateSubagentWidget();
 	});
 
 	// Feature 3: run_workflow tool
@@ -1993,6 +2333,7 @@ export default function (pi: ExtensionAPI) {
 				dispatchDefaults,
 				agents,
 				signal,
+				session: buildSessionLink(ctx.sessionManager),
 				ui: {
 					setWidget: (id, lines) => {
 						try {
@@ -2099,6 +2440,21 @@ export default function (pi: ExtensionAPI) {
 	pi.registerEntryRenderer("subagent-workflow", (entry, _options, theme) => {
 		const state = entry.data as WorkflowState;
 		return renderWorkflowCollapsed(state, theme);
+	});
+
+	// Feature 6.25: entry renderer for subagent-session parent pointers
+	pi.registerEntryRenderer("subagent-session", (entry, _options, theme) => {
+		const rec = entry.data as SubagentRunRecord;
+		const duration = formatRunDuration(rec);
+		const cost =
+			rec.usage?.cost && rec.usage.cost > 0
+				? `$${rec.usage.cost.toFixed(4)}`
+				: "$0";
+		return new Text(
+			`${theme.fg("muted", "▸ subagent session")} ${theme.fg("accent", rec.runId)} ${theme.fg("muted", "·")} ${theme.fg("accent", rec.agent)} ${theme.fg("muted", "·")} ${theme.fg(statusColor(rec.status), rec.status)} ${theme.fg("muted", "·")} ${theme.fg("dim", duration)} ${theme.fg("muted", "·")} ${theme.fg("dim", cost)}`,
+			0,
+			0,
+		);
 	});
 
 	// Feature 4: get_workflow tool — inspect the latest or a specific workflow
@@ -2326,6 +2682,7 @@ export default function (pi: ExtensionAPI) {
 				dispatchDefaults,
 				agents,
 				signal,
+				session: buildSessionLink(ctx.sessionManager),
 				ui: {
 					setWidget: (id, lines) => {
 						try {
@@ -2462,9 +2819,369 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// Feature 6.75: /runs command — durable run records for subagent dispatches
+	pi.registerCommand("runs", {
+		description:
+			"List persisted subagent runs with status, duration, turns, and cost",
+		handler: async (_args, cmdCtx) => {
+			const storeDir = resolveStoreDir(cmdCtx.sessionManager?.getSessionDir());
+
+			// Source list: live registry (record overlaid where available) merged
+			// with store-wide records; dedup by runId, newest first.
+			const loadRows = (): RunsTableRow[] => {
+				const rows: { runId?: string; startedAt: number; row: RunsTableRow }[] = [];
+				for (const info of runningAgents.values()) {
+					const rec = getRun(info.id, storeDir);
+					rows.push({
+						runId: rec?.runId,
+						startedAt: info.startedAt,
+						row: {
+							agent: info.agent,
+							mode: info.mode,
+							status: (rec?.status ?? info.status) as RunStatus,
+							durationMs:
+								rec?.durationMs ??
+								(info.settledAt ? info.settledAt - info.startedAt : undefined),
+							turns: rec?.usage?.turns,
+							cost: rec?.usage?.cost,
+						},
+					});
+				}
+				let storeRuns: SubagentRunRecord[] = [];
+				try {
+					storeRuns = listRuns({ limit: RUNS_DEFAULT_LIMIT }, storeDir);
+				} catch {
+					/* ignore */
+				}
+				for (const rec of storeRuns) {
+					rows.push({
+						runId: rec.runId,
+						startedAt: rec.startedAt,
+						row: {
+							agent: rec.agent,
+							mode: rec.mode,
+							status: rec.status,
+							durationMs: rec.durationMs,
+							turns: rec.usage?.turns,
+							cost: rec.usage?.cost,
+						},
+					});
+				}
+				rows.sort((a, b) => b.startedAt - a.startedAt);
+				const seen = new Set<string>();
+				const out: RunsTableRow[] = [];
+				for (const entry of rows) {
+					if (entry.runId) {
+						if (seen.has(entry.runId)) continue;
+						seen.add(entry.runId);
+					}
+					out.push(entry.row);
+					if (out.length >= RUNS_DEFAULT_LIMIT) break;
+				}
+				return out;
+			};
+
+			if (cmdCtx.mode !== "tui") {
+				const rows = loadRows();
+				if (rows.length === 0) {
+					console.log("No subagent runs recorded.");
+					return;
+				}
+				for (const r of rows) {
+					const duration = formatDuration(r.durationMs);
+					console.log(
+						`${r.agent.padEnd(12)} ${String(r.mode).padEnd(9)} ${String(r.status).padEnd(10)} ${duration.padEnd(9)} ${String(r.turns ?? 0).padEnd(6)} $${(r.cost ?? 0).toFixed(4)}`,
+					);
+				}
+				return;
+			}
+
+			let current = loadRows();
+			const refresh = () => {
+				current = loadRows();
+			};
+
+			await cmdCtx.ui.custom((_tui, theme, _kb, done) => ({
+				render: (width: number) => renderRunsScreen(width, current, theme),
+				invalidate: () => {},
+				handleInput: (data: string) => {
+					if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+						done(undefined);
+					} else if (data === "r" || data === "R") {
+						refresh();
+					}
+				},
+			}));
+		},
+	});
+
 	// Note: Workflow session persistence is implemented via per-step appendEntry
 	// (see executeWorkflowSteps) + session_start hydration. Interrupted workflows
 	// can be inspected with get_workflow and resumed with resume_workflow.
+
+	// Feature 6.8: list_subagent_sessions tool — query the run store
+	pi.registerTool({
+		name: "list_subagent_sessions",
+		label: "List Subagent Sessions",
+		description:
+			"List persisted subagent run records (store-wide) with optional filtering by agent, status, mode, workflow, or recency. Use with get_subagent_session for details.",
+		parameters: Type.Object({
+			agent: Type.Optional(Type.String({ description: "Filter by agent name" })),
+			mode: Type.Optional(
+				StringEnum(["single", "parallel", "chain", "workflow"] as const, {
+					description: "Filter by run mode",
+				}),
+			),
+			status: Type.Optional(
+				StringEnum(
+					[
+						"running",
+						"completed",
+						"failed",
+						"timed_out",
+						"aborted",
+						"orphaned",
+					] as const,
+					{
+						description: "Filter by run status",
+					},
+				),
+			),
+			limit: Type.Optional(
+				Type.Number({
+					description: "Max runs to return (default 50)",
+					default: 50,
+				}),
+			),
+			workflowId: Type.Optional(
+				Type.String({ description: "Filter by workflow id" }),
+			),
+			since: Type.Optional(
+				Type.Number({
+					description: "Only runs started at or after this epoch ms timestamp",
+				}),
+			),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const storeDir = resolveStoreDir(ctx.sessionManager?.getSessionDir());
+			const limit = params.limit ?? RUNS_DEFAULT_LIMIT;
+			let runs: SubagentRunRecord[] = [];
+			try {
+				runs = listRuns(
+					{
+						agent: params.agent,
+						mode: params.mode,
+						status: params.status,
+						workflowId: params.workflowId,
+						since: params.since,
+						limit,
+					},
+					storeDir,
+				);
+			} catch {
+				/* ignore */
+			}
+			const compact = runs.map((r) => ({
+				runId: r.runId,
+				agent: r.agent,
+				mode: r.mode,
+				status: r.status,
+				durationMs: r.durationMs,
+				turns: r.usage.turns,
+				cost: r.usage.cost,
+				task: truncateTask(r.task, 100),
+			}));
+			let text =
+				`Found ${runs.length} subagent run(s)` +
+				(params.agent ? ` for agent "${params.agent}"` : "") +
+				(params.status ? ` [status: ${params.status}]` : "");
+			if (runs.length === 0) {
+				text += "\n\nNo runs recorded yet.";
+			} else {
+				for (const r of compact) {
+					const duration = formatDuration(r.durationMs);
+					text += `\n\n${r.runId} — ${r.agent} (${r.mode}) [${r.status}] — ${duration}, ${r.turns} turns, $${r.cost.toFixed(4)}\n  ${r.task}`;
+				}
+			}
+			return {
+				content: [{ type: "text", text }],
+				details: { runs: compact },
+			};
+		},
+
+		renderCall(args, theme, _context) {
+			let text = theme.fg("toolTitle", theme.bold("list_subagent_sessions"));
+			if (args.agent) text += theme.fg("accent", ` ${args.agent}`);
+			if (args.status) text += theme.fg("muted", ` [${args.status}]`);
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme, _context) {
+			const details = result.details as
+				| {
+						runs?: {
+							runId: string;
+							agent: string;
+							mode: string;
+							status: string;
+							durationMs?: number;
+							turns: number;
+							cost: number;
+							task: string;
+						}[];
+				  }
+				| undefined;
+			const text = result.content[0];
+			const runs = details?.runs ?? [];
+			if (runs.length === 0) {
+				return new Text(text?.type === "text" ? text.text : "No runs", 0, 0);
+			}
+			const lines: string[] = [];
+			for (const r of runs.slice(0, 10)) {
+				const icon =
+					r.status === "completed"
+						? theme.fg("success", "✓")
+						: r.status === "running"
+							? theme.fg("warning", "⏳")
+							: theme.fg("error", "✗");
+				lines.push(
+					`${icon} ${theme.fg("accent", r.agent)} ${theme.fg("dim", `[${r.mode}] ${r.status}`)} ${theme.fg("muted", r.runId)}`,
+				);
+			}
+			if (runs.length > 10)
+				lines.push(theme.fg("muted", `... +${runs.length - 10} more`));
+			return new Text(lines.join("\n"), 0, 0);
+		},
+	});
+
+	// Feature 6.9: get_subagent_session tool — full record + transcript
+	pi.registerTool({
+		name: "get_subagent_session",
+		label: "Get Subagent Session",
+		description:
+			"Retrieve a persisted subagent run record by runId (from list_subagent_sessions) plus an optional transcript excerpt of the child session.",
+		parameters: Type.Object({
+			runId: Type.String({ description: "Run id (e.g. sg-...)" }),
+			includeTranscript: Type.Optional(
+				Type.Boolean({
+					description:
+						"Include the tail of the run's session transcript (last ~30 assistant messages)",
+					default: false,
+				}),
+			),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const storeDir = resolveStoreDir(ctx.sessionManager?.getSessionDir());
+			// Disk record first; fall back to the hydrated parent-session pointer
+			// (which survives pruneStore, since session entries are append-only).
+			const rec = getRun(params.runId, storeDir) ?? sessionRuns.get(params.runId);
+			if (!rec) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `No run record found for "${params.runId}". Run /runs or list_subagent_sessions to see known ids.`,
+						},
+					],
+					details: {},
+				};
+			}
+
+			let transcriptMessages: {
+				role: string;
+				text: string;
+				model?: string;
+				usage?: unknown;
+			}[] = [];
+			if (params.includeTranscript) {
+				try {
+					const t = readRunTranscript(params.runId, storeDir);
+					if (t) {
+						const last = t.messages
+							.filter((m) => m.role === "assistant")
+							.slice(-RUNS_TRANSCRIPT_MAX_MESSAGES);
+						let budget = RUNS_TRANSCRIPT_MAX_BYTES;
+						for (const m of last) {
+							if (budget <= 0) break;
+							const text = m.content
+								.filter((p) => p.type === "text")
+								.map((p) => p.text)
+								.join("\n");
+							if (!text) continue;
+							const capped = sliceUtf8(text, budget);
+							budget -= Buffer.byteLength(capped, "utf8");
+							transcriptMessages.push({
+								role: "assistant",
+								text: capped,
+								model: m.model,
+							});
+						}
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+
+			const duration = formatDuration(rec.durationMs);
+			const usage = rec.usage;
+			let text = `Run ${rec.runId}\n`;
+			text += `Agent: ${rec.agent} (${rec.agentSource})  Mode: ${rec.mode}  Status: ${rec.status}\n`;
+			if (rec.workflowId)
+				text += `Workflow: ${rec.workflowId}${rec.step !== undefined ? ` step ${rec.step}` : ""}\n`;
+			if (rec.model) text += `Model: ${rec.model}\n`;
+			text += `Started: ${new Date(rec.startedAt).toISOString()}  Duration: ${duration}\n`;
+			if (rec.endedAt) text += `Ended: ${new Date(rec.endedAt).toISOString()}\n`;
+			if (rec.exitCode !== undefined) text += `Exit: ${rec.exitCode}\n`;
+			if (rec.pid) text += `PID: ${rec.pid}\n`;
+			text += `Usage: ${usage.turns} turns, input ${usage.input}, output ${usage.output}, cacheRead ${usage.cacheRead}, cacheWrite ${usage.cacheWrite}, ctx ${usage.contextTokens}, cost $${usage.cost.toFixed(4)}\n`;
+			text += `Session file: ${rec.sessionFile ?? "(not discovered)"}\n`;
+			if (rec.error) text += `Error: ${rec.error}\n`;
+			if (rec.outputSummary)
+				text += `\n─── Output summary ───\n${rec.outputSummary}\n`;
+			if (transcriptMessages.length > 0) {
+				text += `\n─── Transcript (last ${transcriptMessages.length}) ───\n`;
+				for (const m of transcriptMessages) {
+					text += `\n[${m.role}${m.model ? ` · ${m.model}` : ""}]\n${m.text}\n`;
+				}
+			}
+			return {
+				content: [{ type: "text", text }],
+				details: { record: rec, transcriptMessages },
+			};
+		},
+
+		renderCall(args, theme, _context) {
+			return new Text(
+				theme.fg("toolTitle", theme.bold("get_subagent_session ")) +
+					theme.fg("accent", args.runId),
+				0,
+				0,
+			);
+		},
+
+		renderResult(result, _expanded, theme, _context) {
+			const details = result.details as { record?: SubagentRunRecord } | undefined;
+			const text = result.content[0];
+			if (!details?.record) {
+				return new Text(text?.type === "text" ? text.text : "No run", 0, 0);
+			}
+			const rec = details.record;
+			const icon =
+				rec.status === "completed"
+					? theme.fg("success", "✓")
+					: rec.status === "running"
+						? theme.fg("warning", "⏳")
+						: theme.fg("error", "✗");
+			const duration = formatDuration(rec.durationMs);
+			return new Text(
+				`${icon} ${theme.fg("toolTitle", rec.agent)} ${theme.fg("accent", rec.runId)} ${theme.fg("dim", `[${rec.mode}] ${rec.status} · ${duration} · $${rec.usage.cost.toFixed(4)}`)}`,
+				0,
+				0,
+			);
+		},
+	});
 
 	pi.registerTool({
 		name: "subagent",
@@ -2472,6 +3189,7 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Delegate tasks to specialized subagents with isolated context.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder), workflow (steps with conditions, error handlers, approval gates, parallelGroup).",
+			`Every dispatch is recorded to the on-disk run store (record.json + the child's own pi session file); inspect with list_subagent_sessions / get_subagent_session or the /runs command.`,
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
@@ -2590,6 +3308,7 @@ export default function (pi: ExtensionAPI) {
 					dispatchDefaults,
 					agents,
 					signal,
+					session: buildSessionLink(ctx.sessionManager),
 					ui: agentUi,
 					onUpdate: (s) => {
 						if (onUpdate) {
@@ -2675,6 +3394,8 @@ export default function (pi: ExtensionAPI) {
 							onUpdate: chainUpdate,
 							makeDetails: makeDetails("chain"),
 							mode: "chain",
+							session: buildSessionLink(ctx.sessionManager),
+							pi,
 							timeoutMs: step.timeoutMs,
 							contextFiles: step.contextFiles,
 							expect: step.expect,
@@ -2787,6 +3508,8 @@ export default function (pi: ExtensionAPI) {
 								},
 								makeDetails: makeDetails("parallel"),
 								mode: "parallel",
+								session: buildSessionLink(ctx.sessionManager),
+								pi,
 								timeoutMs: t.timeoutMs,
 								contextFiles: t.contextFiles,
 								expect: t.expect,
@@ -2831,6 +3554,8 @@ export default function (pi: ExtensionAPI) {
 						onUpdate,
 						makeDetails: makeDetails("single"),
 						mode: "single",
+						session: buildSessionLink(ctx.sessionManager),
+						pi,
 						timeoutMs: params.timeoutMs,
 						contextFiles: params.contextFiles,
 						expect: params.expect,

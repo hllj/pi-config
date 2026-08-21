@@ -10,7 +10,7 @@ Delegate tasks to specialized subagents with isolated context windows. Enhanced 
 - **Parallel streaming**: All parallel tasks stream updates simultaneously
 - **Markdown rendering**: Final output rendered with proper formatting (expanded view)
 - **Usage tracking**: Shows turns, tokens, cost, and context usage per agent
-- **Abort support**: Ctrl+C propagates to kill subagent processes
+- **Abort support**: Ctrl+C propagates to kill subagent processes; `session_shutdown` on quit kills children + marks records `aborted`
 - **Per-agent/step timeout**: `timeoutMs` kills runaway subagents (SIGTERM → SIGKILL)
 - **Context files**: Inject file contents into an agent's system prompt via `contextFiles`
 - **Structured output**: `expect` JSON-Schema contracts validated after completion
@@ -18,6 +18,7 @@ Delegate tasks to specialized subagents with isolated context windows. Enhanced 
 - **Running-subagents widget + `/agents`** screen showing live subagent processes
 - **Workflow persistence**: per-step `appendEntry`; interrupted workflows can be inspected via `get_workflow` and resumed via `resume_workflow`
 - **Parallel workflow steps**: consecutive `parallelGroup` members run concurrently
+- **Persistent run store**: every dispatch is recorded to disk — a real pi session file per run (crash-safe, replayable via `pi --resume`) plus a queryable `record.json` — tracked via `/runs`, `list_subagent_sessions`, and `get_subagent_session`
 
 ## Structure
 
@@ -29,6 +30,8 @@ pi-config/subagent/          # Symlinked to ~/.pi/agent/extensions/subagent
 ├── messaging.ts              # Cross-agent message store + delivery status
 ├── workflow-engine.ts        # Workflow state machine (conditions, errors, resume)
 ├── workflow-renderer.ts      # Workflow TUI rendering
+├── session-store.ts          # Persistent run store (record.json + child session files)
+├── runs-screen.ts            # /runs TUI screen
 ├── agents/                   # Agent definitions ★ NOW CO-LOCATED HERE
 │   ├── scout.md              # Fast codebase recon with pi-lens
 │   ├── planner.md            # Implementation plans with pi-lens
@@ -178,7 +181,27 @@ Workflows persist every state transition via `pi.appendEntry("subagent-workflow"
 ## TUI
 
 - `/agents` — screen listing available agents + currently running subagent processes
+- `/runs` — screen listing persistent run records (historical + live); `r` = refresh, `Esc` = close
 - A `subagents` status/widget shows running subagent count and in-flight tasks
+
+## Run Store (persistent, trackable sessions)
+
+Every subagent dispatch is recorded durably on disk so runs can be audited and replayed later:
+
+```text
+<storeRoot>/subagents/<runId>/
+  <timestamp>_<sessionId>.jsonl   # the child's own pi session (--session-dir) — crash-safe, replayable
+                                # (code discovers the single/latest *.jsonl in the run dir)
+  record.json                   # SubagentRunRecord — atomic tmp+rename rewrites, never torn
+```
+
+- **Store location** (resolution order): `PI_SUBAGENT_SESSION_DIR` env override → `<dirname(dirname(session dir))>/subagents` (next to pi's own `sessions/`) → `~/.pi/agent/subagents` for in-memory sessions.
+- **Recorded per run**: agent, task, model, mode (single/parallel/chain/workflow), workflowId/step, parent session linkage, pid, status, timing, exit code, error, token/cost usage, turns, and the final output summary.
+- **Statuses**: `running`, `completed`, `failed`, `timed_out`, `aborted`, `orphaned`.
+- **Tracking surfaces**: `list_subagent_sessions` (store-wide query: agent/status/mode/workflow filters) and `get_subagent_session` (full record + transcript tail) as tools; `/runs` as a TUI screen. Each run also leaves one compact `subagent-session` pointer entry in the parent session so `/resume` of the session shows the run history inline.
+- **Hydration**: on `session_start` the extension rebuilds the in-session run map from parent-session pointers, reconciles orphans (stale `running` records whose pid died → `orphaned`), and prunes old runs.
+- **Shutdown**: on `/quit`, live subagent processes are killed via a synchronous SIGTERM (+bounded ~200ms SIGKILL escalation) and their records marked `aborted`; `reload`/`new`/`resume`/`fork` leave children running.
+- **Retention**: `pruneStore` deletes runs older than 14 days (or `PI_SUBAGENT_RETENTION_DAYS`) and beyond 500 runs; live runs are never pruned.
 
 ## Agent Messaging
 
