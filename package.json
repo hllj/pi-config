@@ -8,14 +8,20 @@
     "setup": "bash scripts/setup-links.sh",
     "pretypecheck": "npm run setup",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test:subagent": "bash subagent/tests/run-unit.sh",
     "test:subagent:widget": "bash subagent/tests/run-widget.sh",
     "test:todo": "node todo/todo-widget.test.ts",
     "test:notes": "node session-memory/lib.test.ts",
     "test": "npm run test:subagent && npm run test:subagent:widget && npm run test:todo && npm run test:notes",
-    "check": "npm run setup && npm run typecheck && npm test"
+    "check": "npm run setup && npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {
-    "typescript": "^5.8.0"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.68.0"
   }
 }

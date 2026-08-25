@@ -62,6 +62,7 @@ pi-config/                 (= ~/.pi/agent/extensions)
 | Schemas | **TypeBox** | Tool `parameters` are `Type.Object({...})` |
 | Node types | `@types/node` | |
 | Compiler | local `typescript` devDependency | `tsc --noEmit` only for checking |
+| Linter | **ESLint** + **typescript-eslint** (flat config) | `npm run lint`; pragmatic profile (no `no-explicit-any`) |
 
 **Type pinning:** `scripts/setup-links.sh` symlinks `node_modules/@earendil-works/*`,
 `typebox`, and `@types/node` straight into the **global pi install**. Type-checking
@@ -74,6 +75,15 @@ setup` after a fresh clone.
 (they run through Node directly). `isolatedModules`, `esModuleInterop`,
 `skipLibCheck` are on. Don't strengthen `strict` casually; existing code relies on it.
 
+**Linting notes:** `eslint.config.js` (flat config) runs the `js.configs.recommended` +
+`typescript-eslint` recommended rules with a few pragmatic relaxations to match this
+`strict: false` repo: `no-explicit-any` off (TypeBox/jiti/loose helpers use `any`),
+`no-useless-assignment` off (defensive `let ok=false; try{...}catch{ok=false}`),
+and `no-unused-vars` error with `_`-prefix ignore. Test files aren't in tsconfig, so
+project-aware (`parserOptions.project`) parsing is NOT enabled. `monitor/` is ignored
+(it ships its own node_modules + tsconfig). Don't re-enable the strict-quality rules
+casually.
+
 ---
 
 ## Commands
@@ -84,11 +94,14 @@ From repo root:
 npm install              # fetch typescript devDependency only
 npm run setup            # (re)create type-checking symlinks into global pi  [sh scripts/setup-links.sh]
 npm run typecheck        # tsc --noEmit  (npm per-run setup first via pretypecheck)
-npm test                 # all suites: test:subagent + test:subagent:widget + test:todo
+npm run lint             # eslint .  (flat config, pragmatic: real bugs/dead code, not strict-any gate)
+npm run lint:fix         # eslint . --fix  (autofix what's safe)
+npm test                 # all suites: test:subagent + test:subagent:widget + test:todo + test:notes
 npm run test:subagent    # bash subagent/tests/run-unit.sh
 npm run test:subagent:widget  # bash subagent/tests/run-widget.sh
 npm run test:todo        # node todo/todo-widget.test.ts
-npm run check            # setup + typecheck + test  (definition of done for pi-config)
+npm run test:notes       # node session-memory/lib.test.ts
+npm run check            # setup + lint + typecheck + test  (definition of done for pi-config)
 ```
 
 Pi-side (runtime, not in this repo):
