@@ -23,6 +23,7 @@ import {
 	buildTodoStatus,
 	type TodoWidgetTheme,
 } from "./todo/todo-widget.ts";
+import { getTaskStatus } from "./background-tasks/store.ts";
 
 const TODO_PROMPT_SNIPPET =
 	"Track multi-step work: add, list, toggle, and clear todo items";
@@ -37,6 +38,7 @@ interface Todo {
 	id: number;
 	text: string;
 	done: boolean;
+	taskId?: string; // optional link to a background-tasks task for live status
 }
 
 interface TodoDetails {
@@ -46,10 +48,32 @@ interface TodoDetails {
 	error?: string;
 }
 
+/**
+ * Bullet symbol for a todo row: ✓ when done, ⏳ while a linked background
+ * task runs, ⚠ when a linked task ended in a bad state, otherwise ○.
+ */
+function statusSymbol(
+	done: boolean,
+	taskId: string | undefined,
+	theme: { fg: (color: string, text: string) => string },
+): string {
+	if (done) return theme.fg("success", "✓");
+	const st = taskId ? getTaskStatus(taskId) : undefined;
+	if (st === "running") return theme.fg("accent", "⏳");
+	if (st) return theme.fg("warning", "⚠");
+	return theme.fg("dim", "○");
+}
+
 const TodoParams = Type.Object({
 	action: StringEnum(["list", "add", "toggle", "clear"] as const),
 	text: Type.Optional(Type.String({ description: "Todo text (for add)" })),
 	id: Type.Optional(Type.Number({ description: "Todo ID (for toggle)" })),
+	taskId: Type.Optional(
+		Type.String({
+			description:
+				"Optional background-task ID to link this todo to (for add, so its live status shows in the list)",
+		}),
+	),
 });
 
 /**
@@ -107,7 +131,7 @@ class TodoListComponent {
 			lines.push("");
 
 			for (const todo of this.todos) {
-				const check = todo.done ? th.fg("success", "✓") : th.fg("dim", "○");
+				const check = statusSymbol(todo.done, todo.taskId, th);
 				const id = th.fg("accent", `#${todo.id}`);
 				const text = todo.done ? th.fg("dim", todo.text) : th.fg("text", todo.text);
 				lines.push(truncateToWidth(`  ${check} ${id} ${text}`, width));
@@ -172,7 +196,14 @@ export default function (pi: ExtensionAPI) {
 		// the wider `string` while Theme narrows it to ThemeColor; assigning a
 		// narrower-param method to a wider-param type is safe at runtime.
 		const theme = ctx.ui.theme as unknown as TodoWidgetTheme;
-		const lines = buildTodoListWidget(todos, theme);
+		const lines = buildTodoListWidget(
+			todos.map((t) => ({
+				text: t.text,
+				done: t.done,
+				taskStatus: t.taskId ? getTaskStatus(t.taskId) : undefined,
+			})),
+			theme,
+		);
 		ctx.ui.setWidget("todo-list", lines.length > 0 ? lines : undefined);
 		ctx.ui.setStatus("todo", buildTodoStatus(todos, theme));
 	};
@@ -232,7 +263,12 @@ export default function (pi: ExtensionAPI) {
 							} as TodoDetails,
 						};
 					}
-					const newTodo: Todo = { id: nextId++, text: params.text, done: false };
+					const newTodo: Todo = {
+						id: nextId++,
+						text: params.text,
+						done: false,
+						taskId: params.taskId,
+					};
 					todos.push(newTodo);
 					updateTodoState(ctx);
 					return {
@@ -333,7 +369,7 @@ export default function (pi: ExtensionAPI) {
 					let listText = theme.fg("muted", `${todoList.length} todo(s):`);
 					const display = expanded ? todoList : todoList.slice(0, 5);
 					for (const t of display) {
-						const check = t.done ? theme.fg("success", "✓") : theme.fg("dim", "○");
+						const check = statusSymbol(t.done, t.taskId, theme);
 						const itemText = t.done
 							? theme.fg("dim", t.text)
 							: theme.fg("muted", t.text);

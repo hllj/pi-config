@@ -16,6 +16,8 @@ export interface TodoWidgetTheme {
 export interface TodoWidgetItem {
 	text: string;
 	done: boolean;
+	/** Optional live status of a linked background task (running/completed/failed/…). */
+	taskStatus?: string;
 }
 
 /**
@@ -48,13 +50,26 @@ export function buildTodoListWidget(
 
 	for (const t of todos.slice(0, MAX_TODO_WIDGET_ITEMS)) {
 		if (t.done) {
+			const warn =
+				t.taskStatus && t.taskStatus !== "running" && t.taskStatus !== "completed"
+					? theme.fg("warning", " ⚠")
+					: "";
 			lines.push(
 				"  " +
 					theme.fg("success", "✓ ") +
-					theme.fg("muted", theme.strikethrough(t.text)),
+					theme.fg("muted", theme.strikethrough(t.text)) +
+					warn,
 			);
 		} else {
-			lines.push("  " + theme.fg("dim", "○ ") + t.text);
+			let bullet: string;
+			if (t.taskStatus === "running") {
+				bullet = theme.fg("accent", "⏳ ");
+			} else if (t.taskStatus) {
+				bullet = theme.fg("warning", "⚠ ");
+			} else {
+				bullet = theme.fg("dim", "○ ");
+			}
+			lines.push("  " + bullet + t.text);
 		}
 	}
 	if (todos.length > MAX_TODO_WIDGET_ITEMS) {

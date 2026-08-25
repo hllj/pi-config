@@ -106,6 +106,63 @@ const halfDone = [
 ];
 check("status 2/3", buildTodoStatus(halfDone, theme), "📋 2/3");
 
+// ---- linked background task markers ----
+const linkedRunning = [
+	{ id: 1, text: "npm run build", done: false, taskStatus: "running" },
+];
+check(
+	"pending + running task -> ⏳ bullet",
+	buildTodoListWidget(linkedRunning, theme),
+	[
+		"Current task: npm run build",
+		"Task list (1 task):",
+		`  ${theme.fg("accent", "⏳ ")}npm run build`,
+		`${theme.fg("accent", "+1")} pending, ${theme.fg("success", "0 completed")}`,
+	],
+);
+
+const linkedFailed = [
+	{ id: 1, text: "lint", done: false, taskStatus: "failed" },
+];
+check(
+	"pending + failed task -> ⚠ bullet",
+	buildTodoListWidget(linkedFailed, theme),
+	[
+		"Current task: lint",
+		"Task list (1 task):",
+		`  ${theme.fg("warning", "⚠ ")}lint`,
+		`${theme.fg("accent", "+1")} pending, ${theme.fg("success", "0 completed")}`,
+	],
+);
+
+const doneLinkedFailed = [
+	{ id: 1, text: "lint", done: true, taskStatus: "failed" },
+];
+check(
+	"done + failed task -> warning suffix",
+	buildTodoListWidget(doneLinkedFailed, theme),
+	[
+		"Current task: None",
+		"Task list (1 task):",
+		`  ${theme.fg("success", "✓ ")}${theme.fg("muted", theme.strikethrough("lint"))}${theme.fg("warning", " ⚠")}`,
+		`${theme.fg("accent", "+0")} pending, ${theme.fg("success", "1 completed")}`,
+	],
+);
+
+const doneLinkedOk = [
+	{ id: 1, text: "lint", done: true, taskStatus: "completed" },
+];
+check(
+	"done + completed task -> no warning suffix",
+	buildTodoListWidget(doneLinkedOk, theme),
+	[
+		"Current task: None",
+		"Task list (1 task):",
+		`  ${theme.fg("success", "✓ ")}${theme.fg("muted", theme.strikethrough("lint"))}`,
+		`${theme.fg("accent", "+0")} pending, ${theme.fg("success", "1 completed")}`,
+	],
+);
+
 if (failed > 0) {
 	console.error(`\n${failed} test(s) FAILED`);
 	process.exit(1);

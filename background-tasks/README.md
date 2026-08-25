@@ -102,6 +102,16 @@ Persistence:
   • pi.appendEntry("background-task", data) for session persistence
   • Restored from session entries on session_start
 
+### Shared store (`store.ts`)
+
+The in-memory `tasks` map and `TaskInfo`/`TaskStatus` types live in `store.ts`,
+which is imported by **both** this extension and the `todo` tool. Because pi
+loads extensions through the same jiti module registry, both see the same live
+task state. The `todo` tool uses `getTaskStatus(id)` to render a live status
+marker (`⏳` running / `⚠` failed) next to any checklist item created with a
+`taskId`. The two extensions keep their own data models and persistence layers
+separate — a task is only linked, never merged into a todo.
+
 UI:
   • Widget showing running task count + labels + elapsed time
   • Status line indicator: "⏳ N bg tasks"
@@ -130,4 +140,26 @@ Agent: Background Tasks: 3 total, 0 running
        ✓ #abc12344 lint [completed, 5s]
        ✓ #abc12343 test [completed, 30s]
        ✗ #abc12342 dep-install [failed, 10s]
+```
+
+### Linking a task to a todo
+
+A background task can be attached to a checklist item with `todo add` by
+passing its `taskId`. The todo list then shows the task's live status — `⏳`
+while it runs, `⚠` if it ends failed/stopped/timed out — without merging the
+two tools:
+
+```text
+User: Run a long build in the background
+Agent: ✓ task_run started (#abc12345): npm run build
+
+User: Track that build as a todo
+Agent: ✓ todo add "wait for npm run build" (taskId: abc12345)
+
+User: (todo widget) #1 wait for npm run build  ⏳ running
+
+User: The build broke
+Agent: ✗ #abc12345 npm run build [failed]
+
+User: (todo widget) #1 wait for npm run build  ⚠ failed
 ```

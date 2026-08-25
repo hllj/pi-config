@@ -20,34 +20,12 @@ import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { tasks, type TaskInfo, type TaskStatus } from "./store.ts";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types (shared store) ──────────────────────────────────────────────────────
 
-export type TaskStatus =
-	| "running"
-	| "completed"
-	| "failed"
-	| "stopped"
-	| "timeout";
-
-export interface TaskInfo {
-	id: string;
-	label: string;
-	command: string;
-	cwd: string;
-	status: TaskStatus;
-	pid: number | null;
-	createdAt: number;
-	startedAt: number | null;
-	completedAt: number | null;
-	exitCode: number | null;
-	stdout: string;
-	stderr: string;
-	timeout: number | null; // ms, null = no timeout
-	error?: string;
-	stopReason?: string;
-}
-
+// TaskStatus / TaskInfo / tasks live in ./store.ts so the todo extension can
+// observe the same live task state without merging data models or persistence.
 interface TaskDetails {
 	tasks: TaskInfo[];
 	runningCount: number;
@@ -63,7 +41,8 @@ const MAX_LOG_LINES = 200;
 
 // ─── In-memory task store ────────────────────────────────────────────────────
 
-const tasks = new Map<string, TaskInfo>();
+// `tasks` map is shared via ./store.ts (imported above). Lifecycle handles for
+// live child processes stay local to this extension.
 const processes = new Map<string, ChildProcess>();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
