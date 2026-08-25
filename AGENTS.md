@@ -35,6 +35,7 @@ pi-config/                 (= ~/.pi/agent/extensions)
 ├── web-tools.ts           root-level extension: web_search / web_fetch tools
 │
 ├── background-tasks/      extension (index.ts): task_run/task_stop/task_list/etc
+├── bash-tools/            extension (index.ts): file_sizes / run_test / capture_output (context-economical read-decision, targeted-verification, and spill-to-disk full-output tools); capture.ts is the shared spill-to-disk runner
 ├── monitor/               extension (index.ts): monitor_* tools; own package.json + node_modules (ws dep)
 ├── plan-mode/             extension (index.ts): /plan, /plan-todos, Ctrl+Alt+P
 ├── subagent/              extension (index.ts): scout/planner/reviewer/worker + run store + workflow engine
