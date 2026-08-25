@@ -75,7 +75,7 @@ setup` after a fresh clone.
 (they run through Node directly). `isolatedModules`, `esModuleInterop`,
 `skipLibCheck` are on. Don't strengthen `strict` casually; existing code relies on it.
 
-**Linting notes:** `eslint.config.js` (flat config) runs the `js.configs.recommended` +
+**Linting notes:** `eslint.config.mjs` (flat config) runs the `js.configs.recommended` +
 `typescript-eslint` recommended rules with a few pragmatic relaxations to match this
 `strict: false` repo: `no-explicit-any` off (TypeBox/jiti/loose helpers use `any`),
 `no-useless-assignment` off (defensive `let ok=false; try{...}catch{ok=false}`),
