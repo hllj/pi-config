@@ -15,19 +15,33 @@
 
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
+import {
+	convertToLlm,
+	serializeConversation,
+} from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
 		ctx.ui.notify("Custom compaction extension triggered", "info");
 
 		const { preparation, branchEntries: _, signal } = event;
-		const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
+		const {
+			messagesToSummarize,
+			turnPrefixMessages,
+			tokensBefore,
+			firstKeptEntryId,
+			previousSummary,
+		} = preparation;
 
 		// Use Gemini Flash for summarization (cheaper/faster than most conversation models)
-		const model = ctx.modelRegistry.find("google", "gemini-2.5-flash");
+		const model =
+			ctx.modelRegistry.find("openrouter", "google/gemini-2.5-flash") ??
+			ctx.modelRegistry.find("google", "gemini-2.5-flash");
 		if (!model) {
-			ctx.ui.notify(`Could not find Gemini Flash model, using default compaction`, "warning");
+			ctx.ui.notify(
+				`Could not find Gemini Flash model, using default compaction`,
+				"warning",
+			);
 			return;
 		}
 
@@ -43,7 +57,9 @@ export default function (pi: ExtensionAPI) {
 		const conversationText = serializeConversation(convertToLlm(allMessages));
 
 		// Include previous summary context if available
-		const previousContext = previousSummary ? `\n\nPrevious session summary for context:\n${previousSummary}` : "";
+		const previousContext = previousSummary
+			? `\n\nPrevious session summary for context:\n${previousSummary}`
+			: "";
 
 		// Build messages that ask for a comprehensive summary
 		const summaryMessages = [
@@ -93,7 +109,11 @@ ${conversationText}
 				.join("\n");
 
 			if (!summary.trim()) {
-				if (!signal.aborted) ctx.ui.notify("Compaction summary was empty, using default compaction", "warning");
+				if (!signal.aborted)
+					ctx.ui.notify(
+						"Compaction summary was empty, using default compaction",
+						"warning",
+					);
 				return;
 			}
 

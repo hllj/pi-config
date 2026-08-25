@@ -6,7 +6,6 @@
  * - Collapsed/expanded views
  */
 
-// @ts-expect-error - pi-config extensions are outside main tsconfig
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { WorkflowState, WorkflowStepResult } from "./workflow-engine.ts";
 

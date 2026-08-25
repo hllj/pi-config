@@ -75,6 +75,10 @@ import {
 	renderWorkflowExpanded,
 } from "./workflow-renderer.ts";
 import {
+	buildWorkflowStatus,
+	buildWorkflowWidgetLines,
+} from "./workflow-widget.ts";
+import {
 	type RunStatus,
 	type SubagentRunRecord,
 	formatDuration,
@@ -98,6 +102,8 @@ const PER_CONTEXT_FILE_CAP = 50 * 1024;
 const RUNNING_AGENT_PRUNE_MS = 10 * 60 * 1000;
 const SUBAGENTS_WIDGET_ID = "subagents";
 const SUBAGENTS_STATUS_ID = "subagents";
+const WORKFLOW_WIDGET_ID = "workflow";
+const WORKFLOW_STATUS_ID = "workflow";
 const RUNS_DEFAULT_LIMIT = 50;
 const RUNS_TRANSCRIPT_MAX_MESSAGES = 30;
 const RUNS_TRANSCRIPT_MAX_BYTES = 20 * 1024;
@@ -493,13 +499,15 @@ function formatElapsed(startedAt: number): string {
 function formatRunDuration(rec: SubagentRunRecord): string {
 	const ms =
 		rec.durationMs ??
-		(rec.endedAt !== undefined ? rec.endedAt - rec.startedAt : undefined);
+		(rec.endedAt === undefined ? undefined : rec.endedAt - rec.startedAt);
 	if (ms === undefined) return formatElapsed(rec.startedAt);
 	return formatDuration(ms);
 }
 
 /** Color mapping for run statuses (shared by /runs screen + entry renderer). */
-function statusColor(status: string): string {
+function statusColor(
+	status: string,
+): "success" | "error" | "warning" | "muted" {
 	switch (status) {
 		case "completed":
 			return "success";
@@ -528,6 +536,38 @@ function pruneRunningAgents(): void {
 }
 
 /**
+ * Session-cumulative subagent status counts, unioned by runId so live runs
+ * hydrated into sessionRuns (during session_start) are not double-counted
+ * against runningAgents. Settled runs are bucketed by status:
+ * completed = success (exit 0); everything else (failed/timed_out/aborted/
+ * orphaned) counts as failed.
+ */
+function sumSubagentStatus(): {
+	running: number;
+	completed: number;
+	failed: number;
+} {
+	const ids = new Set([...sessionRuns.keys(), ...runningAgents.keys()]);
+	let running = 0;
+	let completed = 0;
+	let failed = 0;
+	for (const id of ids) {
+		if (runningAgents.get(id)?.status === "running") {
+			running++;
+			continue;
+		}
+		const live = runningAgents.get(id);
+		const rec = live
+			? { status: live.status, exitCode: live.exitCode }
+			: sessionRuns.get(id);
+		if (!rec) continue;
+		if (rec.status === "completed") completed++;
+		else failed++;
+	}
+	return { running, completed, failed };
+}
+
+/**
  * Refresh the "subagents" widget + status from the registry. Fail-soft: UI
  * errors (e.g. non-TUI mode) are swallowed.
  */
@@ -543,7 +583,10 @@ function updateSubagentWidget(ui?: UiHooks): void {
 		.slice(0, 5);
 
 	const lines: string[] = [];
-	lines.push(`Subagents: ${running.length} running`);
+	const { running: runningCount, completed, failed } = sumSubagentStatus();
+	lines.push(
+		`Subagents: ${runningCount} running / ${completed} completed / ${failed} failed`,
+	);
 	for (const r of running.slice(0, 6)) {
 		const stepText = r.step === undefined ? "" : ` step ${r.step}`;
 		lines.push(
@@ -565,8 +608,26 @@ function updateSubagentWidget(ui?: UiHooks): void {
 		if (typeof ui.setStatus === "function") {
 			ui.setStatus(
 				SUBAGENTS_STATUS_ID,
-				running.length > 0 ? `sg:${running.length}` : "",
+				runningCount > 0 ? `sg:${runningCount}/${completed}✓/${failed}✗` : "",
 			);
+		}
+	} catch {
+		/* Ignore UI errors (e.g. in non-TUI mode) */
+	}
+}
+
+/**
+ * Refresh the "workflow" widget + status from the current workflow state.
+ * Fail-soft like updateSubagentWidget: UI errors (e.g. non-TUI mode) are
+ * swallowed. Linear output — no theme coloring (UiHooks has no theme).
+ */
+function updateWorkflowWidget(state: WorkflowState, ui?: UiHooks): void {
+	if (!ui || typeof ui.setWidget !== "function") return;
+	try {
+		const lines = buildWorkflowWidgetLines(state);
+		ui.setWidget(WORKFLOW_WIDGET_ID, lines);
+		if (typeof ui.setStatus === "function") {
+			ui.setStatus(WORKFLOW_STATUS_ID, buildWorkflowStatus(state));
 		}
 	} catch {
 		/* Ignore UI errors (e.g. in non-TUI mode) */
@@ -866,6 +927,11 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 		} catch {
 			/* ignore */
 		}
+		// Keep the in-session run map current when runs settle mid-session (today
+		// it is only hydrated at session_start). Without this the widget's
+		// cumulative completed/failed counts would shrink once pruneRunningAgents()
+		// removes settled entries from runningAgents after RUNNING_AGENT_PRUNE_MS.
+		sessionRuns.set(runRec.runId, runRec);
 		// Parent-session pointer: ONE compact entry per run (full record minus
 		// task/outputSummary truncated to keep session growth bounded).
 		if (opts.pi) {
@@ -975,6 +1041,12 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 				...process.env,
 				...(agent.env ?? {}),
 				PI_SUBAGENT_RUN_ID: runId,
+				// pi-lens subagent detection (light mode) — see pi-lens
+				// dist/clients/subagent-mode.js: PI_SUBAGENT_CHILD === "1"
+				// activates subagent mode; the AGENT/PID pair is informational.
+				PI_SUBAGENT_CHILD: "1",
+				PI_SUBAGENT_CHILD_AGENT: agentName,
+				PI_SUBAGENT_PARENT_PID: String(process.pid),
 				...(session?.sessionFile
 					? { PI_PARENT_SESSION_FILE: session.sessionFile }
 					: {}),
@@ -1449,6 +1521,7 @@ async function executeWorkflowSteps(
 			/* ignore */
 		}
 		if (exec.onUpdate) exec.onUpdate(current);
+		updateWorkflowWidget(current, exec.ui);
 	};
 	commit(current);
 
@@ -2103,7 +2176,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Feature 2: Entry renderer for subagent-message
 	pi.registerEntryRenderer("subagent-message", (entry, _options, theme) => {
-		const msg = entry.data as SubagentMessage;
+		const msg = (entry as { data?: unknown }).data as SubagentMessage;
 		const statusIcon =
 			msg.deliveryStatus === "delivered"
 				? theme.fg("success", "✓")
@@ -2134,8 +2207,8 @@ export default function (pi: ExtensionAPI) {
 		// same message id supersede earlier ones (last-wins).
 		const messageMap = new Map<string, SubagentMessage>();
 		for (const entry of entries) {
-			if (entry.type === "subagent-message") {
-				const msg = entry.data as SubagentMessage;
+			if ((entry as { type?: string }).type === "subagent-message") {
+				const msg = (entry as { data?: unknown }).data as SubagentMessage;
 				if (msg && typeof msg.id === "string") messageMap.set(msg.id, msg);
 			}
 		}
@@ -2155,8 +2228,8 @@ export default function (pi: ExtensionAPI) {
 		// paused (never auto-resume on reload — mirrors monitor's rule).
 		const workflowMap = new Map<string, WorkflowState>();
 		for (const entry of entries) {
-			if (entry.type === "subagent-workflow") {
-				const wf = entry.data as WorkflowState;
+			if ((entry as { type?: string }).type === "subagent-workflow") {
+				const wf = (entry as { data?: unknown }).data as WorkflowState;
 				if (wf && typeof wf.id === "string") workflowMap.set(wf.id, wf);
 			}
 		}
@@ -2166,9 +2239,9 @@ export default function (pi: ExtensionAPI) {
 		// Most recent workflow entry wins the "latest" slot for get_workflow/resume.
 		const lastWfEntry = [...entries]
 			.reverse()
-			.find((e) => e.type === "subagent-workflow");
+			.find((e) => (e as { type?: string }).type === "subagent-workflow");
 		if (lastWfEntry) {
-			const wf = lastWfEntry.data as WorkflowState;
+			const wf = (lastWfEntry as { data?: unknown }).data as WorkflowState;
 			if (wf && typeof wf.id === "string") lastWorkflowId = wf.id;
 		}
 
@@ -2177,8 +2250,8 @@ export default function (pi: ExtensionAPI) {
 		const storeDir = resolveStoreDir(ctx.sessionManager?.getSessionDir());
 		const runMap = new Map<string, SubagentRunRecord>();
 		for (const entry of entries) {
-			if (entry.type === "subagent-session") {
-				const rec = entry.data as SubagentRunRecord;
+			if ((entry as { type?: string }).type === "subagent-session") {
+				const rec = (entry as { data?: unknown }).data as SubagentRunRecord;
 				if (rec && typeof rec.runId === "string") runMap.set(rec.runId, rec);
 			}
 		}
@@ -2252,7 +2325,19 @@ export default function (pi: ExtensionAPI) {
 			info.status = "aborted";
 			info.settledAt = Date.now();
 		}
-		updateSubagentWidget();
+		updateSubagentWidget(ctx.ui);
+		// Clear the live workflow widget/status on quit so a stale workflow
+		// doesn't linger. Fail-soft like the rest of the shutdown path.
+		try {
+			if (typeof ctx.ui?.setWidget === "function") {
+				ctx.ui.setWidget(WORKFLOW_WIDGET_ID, []);
+			}
+			if (typeof ctx.ui?.setStatus === "function") {
+				ctx.ui.setStatus(WORKFLOW_STATUS_ID, "");
+			}
+		} catch {
+			/* ignore */
+		}
 	});
 
 	// Feature 3: run_workflow tool
@@ -2438,13 +2523,13 @@ export default function (pi: ExtensionAPI) {
 
 	// Feature 3: Entry renderer for workflow state
 	pi.registerEntryRenderer("subagent-workflow", (entry, _options, theme) => {
-		const state = entry.data as WorkflowState;
+		const state = (entry as { data?: unknown }).data as WorkflowState;
 		return renderWorkflowCollapsed(state, theme);
 	});
 
 	// Feature 6.25: entry renderer for subagent-session parent pointers
 	pi.registerEntryRenderer("subagent-session", (entry, _options, theme) => {
-		const rec = entry.data as SubagentRunRecord;
+		const rec = (entry as { data?: unknown }).data as SubagentRunRecord;
 		const duration = formatRunDuration(rec);
 		const cost =
 			rec.usage?.cost && rec.usage.cost > 0
@@ -3089,7 +3174,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			let transcriptMessages: {
+			const transcriptMessages: {
 				role: string;
 				text: string;
 				model?: string;
@@ -3129,7 +3214,7 @@ export default function (pi: ExtensionAPI) {
 			let text = `Run ${rec.runId}\n`;
 			text += `Agent: ${rec.agent} (${rec.agentSource})  Mode: ${rec.mode}  Status: ${rec.status}\n`;
 			if (rec.workflowId)
-				text += `Workflow: ${rec.workflowId}${rec.step !== undefined ? ` step ${rec.step}` : ""}\n`;
+				text += `Workflow: ${rec.workflowId}${rec.step === undefined ? "" : ` step ${rec.step}`}\n`;
 			if (rec.model) text += `Model: ${rec.model}\n`;
 			text += `Started: ${new Date(rec.startedAt).toISOString()}  Duration: ${duration}\n`;
 			if (rec.endedAt) text += `Ended: ${new Date(rec.endedAt).toISOString()}\n`;

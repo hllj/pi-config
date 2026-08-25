@@ -11,9 +11,27 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
 import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	buildTodoListWidget,
+	buildTodoStatus,
+	type TodoWidgetTheme,
+} from "./todo/todo-widget.ts";
+
+const TODO_PROMPT_SNIPPET =
+	"Track multi-step work: add, list, toggle, and clear todo items";
+
+const TODO_PROMPT_GUIDELINES = [
+	'For any task that requires 3 or more steps, first call todo with action "add" to create a step-by-step todo list before doing the work.',
+	'Mark each todo item done with todo action "toggle" as soon as you complete it; do not batch toggles at the end.',
+	'Call todo action "clear" only when the whole task list is finished, and add new todos with todo action "add" if the task scope changes.',
+];
 
 interface Todo {
 	id: number;
@@ -67,16 +85,25 @@ class TodoListComponent {
 		lines.push("");
 		const title = th.fg("accent", " Todos ");
 		const headerLine =
-			th.fg("borderMuted", "─".repeat(3)) + title + th.fg("borderMuted", "─".repeat(Math.max(0, width - 10)));
+			th.fg("borderMuted", "─".repeat(3)) +
+			title +
+			th.fg("borderMuted", "─".repeat(Math.max(0, width - 10)));
 		lines.push(truncateToWidth(headerLine, width));
 		lines.push("");
 
 		if (this.todos.length === 0) {
-			lines.push(truncateToWidth(`  ${th.fg("dim", "No todos yet. Ask the agent to add some!")}`, width));
+			lines.push(
+				truncateToWidth(
+					`  ${th.fg("dim", "No todos yet. Ask the agent to add some!")}`,
+					width,
+				),
+			);
 		} else {
 			const done = this.todos.filter((t) => t.done).length;
 			const total = this.todos.length;
-			lines.push(truncateToWidth(`  ${th.fg("muted", `${done}/${total} completed`)}`, width));
+			lines.push(
+				truncateToWidth(`  ${th.fg("muted", `${done}/${total} completed`)}`, width),
+			);
 			lines.push("");
 
 			for (const todo of this.todos) {
@@ -88,7 +115,9 @@ class TodoListComponent {
 		}
 
 		lines.push("");
-		lines.push(truncateToWidth(`  ${th.fg("dim", "Press Escape to close")}`, width));
+		lines.push(
+			truncateToWidth(`  ${th.fg("dim", "Press Escape to close")}`, width),
+		);
 		lines.push("");
 
 		this.cachedWidth = width;
@@ -126,20 +155,55 @@ export default function (pi: ExtensionAPI) {
 				nextId = details.nextId;
 			}
 		}
+
+		updateTodoState(ctx);
+	};
+
+	/**
+	 * Refresh the persistent above-editor widget + footer status to match the
+	 * current todos. Shows a max-5-item condensed list with counts when todos
+	 * exist, and clears both when there are none. Distinct keys from plan-mode.
+	 */
+	const updateTodoState = (ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
+		// SAFETY: ctx.ui.theme (Theme) has fg(color: ThemeColor, text) and
+		// strikethrough(text) with the same shapes as TodoWidgetTheme. The
+		// double cast is needed only because TodoWidgetTheme's `color` param is
+		// the wider `string` while Theme narrows it to ThemeColor; assigning a
+		// narrower-param method to a wider-param type is safe at runtime.
+		const theme = ctx.ui.theme as unknown as TodoWidgetTheme;
+		const lines = buildTodoListWidget(todos, theme);
+		ctx.ui.setWidget("todo-list", lines.length > 0 ? lines : undefined);
+		ctx.ui.setStatus("todo", buildTodoStatus(todos, theme));
 	};
 
 	// Reconstruct state on session events
 	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
 	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
 
+	// Always-present instruction: decompose multi-step work into todos first.
+	// Belt-and-suspenders on top of the tool's promptSnippet/promptGuidelines,
+	// so the todo discipline survives even when tool prompt metadata is not
+	// honored by a given provider. Keep it short to limit cache invalidation.
+	pi.on("before_agent_start", async (event) => {
+		return {
+			systemPrompt:
+				event.systemPrompt +
+				'\n\n## Todo discipline\nBefore starting any task with multiple steps, call the todo tool to add a step-by-step list, then call todo action "toggle" to mark each item done as you finish it.',
+		};
+	});
+
 	// Register the todo tool for the LLM
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage a todo list. Actions: list, add (text), toggle (id), clear",
+		description:
+			'Manage the persistent todo list. Use action "add" (text) to create a step-by-step plan before starting multi-step work, "toggle" (id) to mark items done as you complete each one, "list" to review the current list, and "clear" to reset. Always decompose multi-step tasks into todos first.',
+		promptSnippet: TODO_PROMPT_SNIPPET,
+		promptGuidelines: TODO_PROMPT_GUIDELINES,
 		parameters: TodoParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			switch (params.action) {
 				case "list":
 					return {
@@ -147,7 +211,9 @@ export default function (pi: ExtensionAPI) {
 							{
 								type: "text",
 								text: todos.length
-									? todos.map((t) => `[${t.done ? "x" : " "}] #${t.id}: ${t.text}`).join("\n")
+									? todos
+											.map((t) => `[${t.done ? "x" : " "}] #${t.id}: ${t.text}`)
+											.join("\n")
 									: "No todos",
 							},
 						],
@@ -158,13 +224,21 @@ export default function (pi: ExtensionAPI) {
 					if (!params.text) {
 						return {
 							content: [{ type: "text", text: "Error: text required for add" }],
-							details: { action: "add", todos: [...todos], nextId, error: "text required" } as TodoDetails,
+							details: {
+								action: "add",
+								todos: [...todos],
+								nextId,
+								error: "text required",
+							} as TodoDetails,
 						};
 					}
 					const newTodo: Todo = { id: nextId++, text: params.text, done: false };
 					todos.push(newTodo);
+					updateTodoState(ctx);
 					return {
-						content: [{ type: "text", text: `Added todo #${newTodo.id}: ${newTodo.text}` }],
+						content: [
+							{ type: "text", text: `Added todo #${newTodo.id}: ${newTodo.text}` },
+						],
 						details: { action: "add", todos: [...todos], nextId } as TodoDetails,
 					};
 				}
@@ -173,7 +247,12 @@ export default function (pi: ExtensionAPI) {
 					if (params.id === undefined) {
 						return {
 							content: [{ type: "text", text: "Error: id required for toggle" }],
-							details: { action: "toggle", todos: [...todos], nextId, error: "id required" } as TodoDetails,
+							details: {
+								action: "toggle",
+								todos: [...todos],
+								nextId,
+								error: "id required",
+							} as TodoDetails,
 						};
 					}
 					const todo = todos.find((t) => t.id === params.id);
@@ -189,8 +268,14 @@ export default function (pi: ExtensionAPI) {
 						};
 					}
 					todo.done = !todo.done;
+					updateTodoState(ctx);
 					return {
-						content: [{ type: "text", text: `Todo #${todo.id} ${todo.done ? "completed" : "uncompleted"}` }],
+						content: [
+							{
+								type: "text",
+								text: `Todo #${todo.id} ${todo.done ? "completed" : "uncompleted"}`,
+							},
+						],
 						details: { action: "toggle", todos: [...todos], nextId } as TodoDetails,
 					};
 				}
@@ -199,6 +284,7 @@ export default function (pi: ExtensionAPI) {
 					const count = todos.length;
 					todos = [];
 					nextId = 1;
+					updateTodoState(ctx);
 					return {
 						content: [{ type: "text", text: `Cleared ${count} todos` }],
 						details: { action: "clear", todos: [], nextId: 1 } as TodoDetails,
@@ -219,7 +305,8 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, _context) {
-			let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", args.action);
+			let text =
+				theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", args.action);
 			if (args.text) text += ` ${theme.fg("dim", `"${args.text}"`)}`;
 			if (args.id !== undefined) text += ` ${theme.fg("accent", `#${args.id}`)}`;
 			return new Text(text, 0, 0);
@@ -247,7 +334,9 @@ export default function (pi: ExtensionAPI) {
 					const display = expanded ? todoList : todoList.slice(0, 5);
 					for (const t of display) {
 						const check = t.done ? theme.fg("success", "✓") : theme.fg("dim", "○");
-						const itemText = t.done ? theme.fg("dim", t.text) : theme.fg("muted", t.text);
+						const itemText = t.done
+							? theme.fg("dim", t.text)
+							: theme.fg("muted", t.text);
 						listText += `\n${check} ${theme.fg("accent", `#${t.id}`)} ${itemText}`;
 					}
 					if (!expanded && todoList.length > 5) {
@@ -275,7 +364,11 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				case "clear":
-					return new Text(theme.fg("success", "✓ ") + theme.fg("muted", "Cleared all todos"), 0, 0);
+					return new Text(
+						theme.fg("success", "✓ ") + theme.fg("muted", "Cleared all todos"),
+						0,
+						0,
+					);
 			}
 		},
 	});

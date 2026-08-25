@@ -94,7 +94,7 @@ export function validateStructuredOutput(
 	}
 	const parsed = tryParseJson(finalText);
 	if (!parsed.ok) {
-		return { ok: false, error: parsed.error };
+		return { ok: false, error: (parsed as { error: string }).error };
 	}
 	let valid = false;
 	try {

@@ -19,10 +19,19 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	AgentToolResult,
+	ToolRenderResultOptions,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
 import { matchesKey, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import WebSocket from "ws";
+
+// A minimal text-content part used across tool result/update shapes.
+type TextPart = { type: "text"; text: string };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -605,9 +614,10 @@ function stopAllMonitors(reason = "session_shutdown") {
 function setupPermissionGating(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName === "monitor_start" && event.input.type === "command") {
+			const cmd = (event.input as { command?: unknown }).command;
 			const ok = await ctx.ui.confirm(
 				"Monitor Permission",
-				`Allow monitoring: ${event.input.command?.slice(0, 200)}`,
+				`Allow monitoring: ${typeof cmd === "string" ? cmd.slice(0, 200) : ""}`,
 			);
 			if (!ok) {
 				return {
@@ -641,16 +651,14 @@ interface MonitorStartParams {
 async function toolMonitorStart(
 	params: MonitorStartParams,
 	signal: AbortSignal,
-	onUpdate:
-		| ((update: { content?: Array<{ type: string; text: string }> }) => void)
-		| undefined,
+	onUpdate: ((update: { content?: TextPart[] }) => void) | undefined,
 	ctx: {
-		ui: ExtensionAPI["ui"];
-		appendEntry: ExtensionAPI["appendEntry"];
+		ui: ExtensionContext["ui"];
+		appendEntry?: ExtensionAPI["appendEntry"];
 		cwd: string;
 	},
 ): Promise<{
-	content: Array<{ type: string; text: string }>;
+	content: TextPart[];
 	details: MonitorDetails;
 	isError?: boolean;
 }> {
@@ -767,9 +775,12 @@ async function toolMonitorStart(
 
 async function toolMonitorStop(
 	params: { monitorId: string },
-	_ctx: { ui: ExtensionAPI["ui"]; appendEntry: ExtensionAPI["appendEntry"] },
+	_ctx: {
+		ui: ExtensionContext["ui"];
+		appendEntry?: ExtensionAPI["appendEntry"];
+	},
 ): Promise<{
-	content: Array<{ type: string; text: string }>;
+	content: TextPart[];
 	details: MonitorDetails;
 	isError?: boolean;
 }> {
@@ -827,7 +838,7 @@ async function toolMonitorStop(
 }
 
 async function toolMonitorList(params: { status?: string }): Promise<{
-	content: Array<{ type: string; text: string }>;
+	content: TextPart[];
 	details: MonitorDetails;
 }> {
 	let all = Array.from(monitors.values());
@@ -874,7 +885,7 @@ async function toolMonitorStatus(params: {
 	showEvents?: boolean;
 	eventLimit?: number;
 }): Promise<{
-	content: Array<{ type: string; text: string }>;
+	content: TextPart[];
 	details: MonitorDetails;
 	isError?: boolean;
 }> {
@@ -957,9 +968,9 @@ async function toolMonitorPattern(
 		patternId?: string;
 		cooldown?: number;
 	},
-	_ctx: { appendEntry: ExtensionAPI["appendEntry"] },
+	_ctx: { appendEntry?: ExtensionAPI["appendEntry"] },
 ): Promise<{
-	content: Array<{ type: string; text: string }>;
+	content: TextPart[];
 	details: MonitorDetails;
 	isError?: boolean;
 }> {
@@ -1151,7 +1162,7 @@ function setupTuiCommand(pi: ExtensionAPI) {
 									formatDuration((m.stoppedAt ?? Date.now()) - m.startedAt),
 								)
 							: "";
-						const typeTag = th.fg("info", m.type === "command" ? "cmd" : "ws");
+						const typeTag = th.fg("muted", m.type === "command" ? "cmd" : "ws");
 
 						lines.push(`  ${icon} ${shortId} ${label} ${typeTag} ${elapsed}`);
 
@@ -1187,9 +1198,9 @@ function setupTuiCommand(pi: ExtensionAPI) {
 // ─── Session hooks ───────────────────────────────────────────────────────────
 
 function onSessionStart(ctx: {
-	ui: ExtensionAPI["ui"];
+	ui: ExtensionContext["ui"];
 	sessionManager?: { getEntries: () => Array<{ type: string; data?: unknown }> };
-	appendEntry: ExtensionAPI["appendEntry"];
+	appendEntry?: ExtensionAPI["appendEntry"];
 }) {
 	// Restore from session entries
 	try {
@@ -1233,7 +1244,10 @@ function onSessionStart(ctx: {
 		// Best-effort restore
 	}
 
-	updateWidget(ctx);
+	updateWidget({
+		setWidget: (id, lines) => ctx.ui.setWidget(id, lines ?? []),
+		setStatus: (id, text) => ctx.ui.setStatus(id, text),
+	});
 }
 
 // ─── Custom rendering ────────────────────────────────────────────────────────
@@ -1275,15 +1289,12 @@ function renderCall(
 }
 
 function renderResult(
-	result: {
-		content?: Array<{ type: string; text: string }>;
-		details?: { monitors?: MonitorInfo[]; runningCount?: number };
-	},
-	_state: unknown,
-	theme: {
-		fg?: (color: string, text: string) => string;
-		bold?: (text: string) => string;
-	},
+	result: AgentToolResult<{
+		monitors?: MonitorInfo[];
+		runningCount?: number;
+	}>,
+	_options: ToolRenderResultOptions,
+	theme: Theme,
 	_context: unknown,
 ): Text {
 	const t = theme;
@@ -1409,12 +1420,10 @@ export default function (pi: ExtensionAPI) {
 			return toolMonitorStart(
 				params as MonitorStartParams,
 				signal,
-				onUpdate as
-					| ((update: { content?: Array<{ type: string; text: string }> }) => void)
-					| undefined,
+				onUpdate as ((update: { content?: TextPart[] }) => void) | undefined,
 				ctx as {
-					ui: ExtensionAPI["ui"];
-					appendEntry: ExtensionAPI["appendEntry"];
+					ui: ExtensionContext["ui"];
+					appendEntry?: ExtensionAPI["appendEntry"];
 					cwd: string;
 				},
 			);
@@ -1437,7 +1446,10 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return toolMonitorStop(
 				params as { monitorId: string },
-				ctx as { ui: ExtensionAPI["ui"]; appendEntry: ExtensionAPI["appendEntry"] },
+				ctx as {
+					ui: ExtensionContext["ui"];
+					appendEntry?: ExtensionAPI["appendEntry"];
+				},
 			);
 		},
 		renderCall,
@@ -1542,7 +1554,7 @@ export default function (pi: ExtensionAPI) {
 					patternId?: string;
 					cooldown?: number;
 				},
-				ctx as { appendEntry: ExtensionAPI["appendEntry"] },
+				ctx as { appendEntry?: ExtensionAPI["appendEntry"] },
 			);
 		},
 		renderCall,
@@ -1556,11 +1568,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		onSessionStart(
 			ctx as {
-				ui: ExtensionAPI["ui"];
+				ui: ExtensionContext["ui"];
 				sessionManager?: {
 					getEntries: () => Array<{ type: string; data?: unknown }>;
 				};
-				appendEntry: ExtensionAPI["appendEntry"];
+				appendEntry?: ExtensionAPI["appendEntry"];
 			},
 		);
 	});

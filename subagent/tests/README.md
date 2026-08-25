@@ -26,7 +26,9 @@ PI_MODULES_ROOT=/custom/location ./run-unit.sh
 
 `run-unit.sh` copies the **current** `../session-store.ts` next to `unit.test.mjs`
 in a throwaway workspace (with the pi modules resolvable) so you always test the
-latest source — nothing is cached.
+latest source — nothing is cached. It then also shells out to `run-widget.sh`,
+which exercises the pure live-workflow widget rendering (`workflow-widget.ts`,
+dependency-free — a bare workspace suffices).
 
 | Section | Asserts |
 | --- | --- |

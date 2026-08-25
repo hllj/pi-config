@@ -341,36 +341,44 @@ export default function (pi: ExtensionAPI) {
 		// Restore previously persisted tasks from session entries
 		const entries = ctx.sessionManager.getEntries();
 		for (const entry of entries) {
+			const type = (entry as { type: string }).type;
+			const data = (entry as { data?: unknown }).data;
 			if (
-				entry.type === TASK_STORAGE_TYPE &&
-				entry.data &&
-				typeof entry.data === "object" &&
-				"id" in (entry.data as Record<string, unknown>)
+				type === TASK_STORAGE_TYPE &&
+				data &&
+				typeof data === "object" &&
+				"id" in (data as Record<string, unknown>)
 			) {
-				const data = entry.data as Record<string, unknown>;
-				if (!tasks.has(data.id as string)) {
+				if (!tasks.has((data as Record<string, unknown>).id as string)) {
 					const restoredTask: TaskInfo = {
-						id: data.id as string,
-						label: (data.label as string) || "",
-						command: (data.command as string) || "",
-						cwd: (data.cwd as string) || ctx.cwd,
-						status: (data.status as TaskStatus) || "completed",
+						id: (data as Record<string, unknown>).id as string,
+						label: ((data as Record<string, unknown>).label as string) || "",
+						command: ((data as Record<string, unknown>).command as string) || "",
+						cwd: ((data as Record<string, unknown>).cwd as string) || ctx.cwd,
+						status:
+							((data as Record<string, unknown>).status as TaskStatus) || "completed",
 						pid: null,
-						createdAt: (data.createdAt as number) || 0,
-						startedAt: (data.startedAt as number) || null,
-						completedAt: (data.completedAt as number) || null,
-						exitCode: (data.exitCode as number) || null,
-						stdout: (data.stdout as string) || "",
-						stderr: (data.stderr as string) || "",
-						timeout: (data.timeout as number) || null,
-						error: (data.error as string) || undefined,
-						stopReason: (data.stopReason as string) || undefined,
+						createdAt: ((data as Record<string, unknown>).createdAt as number) || 0,
+						startedAt:
+							((data as Record<string, unknown>).startedAt as number) || null,
+						completedAt:
+							((data as Record<string, unknown>).completedAt as number) || null,
+						exitCode: ((data as Record<string, unknown>).exitCode as number) || null,
+						stdout: ((data as Record<string, unknown>).stdout as string) || "",
+						stderr: ((data as Record<string, unknown>).stderr as string) || "",
+						timeout: ((data as Record<string, unknown>).timeout as number) || null,
+						error: ((data as Record<string, unknown>).error as string) || undefined,
+						stopReason:
+							((data as Record<string, unknown>).stopReason as string) || undefined,
 					};
 					tasks.set(restoredTask.id, restoredTask);
 				}
 			}
 		}
-		updateWidget(ctx);
+		updateWidget({
+			setWidget: (id, lines) => ctx.ui.setWidget(id, lines ?? []),
+			setStatus: (id, text) => ctx.ui.setStatus(id, text),
+		});
 	});
 
 	// ── Tool: task_run ──
@@ -508,8 +516,14 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			persistTask(ctx, task);
-			updateWidget(ctx);
+			persistTask(
+				{ appendEntry: (type, data) => pi.appendEntry(type, data) },
+				task,
+			);
+			updateWidget({
+				setWidget: (id, lines) => ctx.ui.setWidget(id, lines ?? []),
+				setStatus: (id, text) => ctx.ui.setStatus(id, text),
+			});
 			ctx.ui.notify(`Task stopped: ${task.label}`, "warning");
 
 			return {

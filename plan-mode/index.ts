@@ -14,15 +14,26 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
+import {
+	extractTodoItems,
+	isSafeCommand,
+	markCompletedSteps,
+	type TodoItem,
+} from "./utils.ts";
 
 // Tools
 const PLAN_MODE_TOOLS = ["read", "bash", "grep", "find", "ls", "questionnaire"];
 const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write"]);
-const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
+const PLAN_MANAGED_TOOLS = new Set<string>([
+	...PLAN_MODE_TOOLS,
+	...NORMAL_MODE_TOOLS,
+]);
 
 interface PlanModeState {
 	enabled: boolean;
@@ -60,7 +71,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		// Footer status
 		if (executionMode && todoItems.length > 0) {
 			const completed = todoItems.filter((t) => t.completed).length;
-			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`));
+			ctx.ui.setStatus(
+				"plan-mode",
+				ctx.ui.theme.fg("accent", `📋 ${completed}/${todoItems.length}`),
+			);
 		} else if (planModeEnabled) {
 			ctx.ui.setStatus("plan-mode", ctx.ui.theme.fg("warning", "⏸ plan"));
 		} else {
@@ -72,7 +86,8 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			const lines = todoItems.map((item) => {
 				if (item.completed) {
 					return (
-						ctx.ui.theme.fg("success", "☑ ") + ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text))
+						ctx.ui.theme.fg("success", "☑ ") +
+						ctx.ui.theme.fg("muted", ctx.ui.theme.strikethrough(item.text))
 					);
 				}
 				return `${ctx.ui.theme.fg("muted", "☐ ")}${item.text}`;
@@ -109,7 +124,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	}
 
 	function restoreNormalModeTools(): void {
-		pi.setActiveTools(toolsBeforePlanMode ?? getNormalModeTools(pi.getActiveTools()));
+		pi.setActiveTools(
+			toolsBeforePlanMode ?? getNormalModeTools(pi.getActiveTools()),
+		);
 		toolsBeforePlanMode = undefined;
 	}
 
@@ -143,14 +160,16 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => togglePlanMode(ctx),
 	});
 
-	pi.registerCommand("todos", {
+	pi.registerCommand("plan-todos", {
 		description: "Show current plan todo list",
 		handler: async (_args, ctx) => {
 			if (todoItems.length === 0) {
 				ctx.ui.notify("No todos. Create a plan first with /plan", "info");
 				return;
 			}
-			const list = todoItems.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n");
+			const list = todoItems
+				.map((item, i) => `${i + 1}. ${item.completed ? "✓" : "○"} ${item.text}`)
+				.join("\n");
 			ctx.ui.notify(`Plan Progress:\n${list}`, "info");
 		},
 	});
@@ -189,7 +208,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				}
 				if (Array.isArray(content)) {
 					return !content.some(
-						(c) => c.type === "text" && (c as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
+						(c) =>
+							c.type === "text" &&
+							(c as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
 					);
 				}
 				return true;
@@ -265,7 +286,11 @@ After completing a step, include a [DONE:n] tag in your response.`,
 			if (todoItems.every((t) => t.completed)) {
 				const completedList = todoItems.map((t) => `~~${t.text}~~`).join("\n");
 				pi.sendMessage(
-					{ customType: "plan-complete", content: `**Plan Complete!** ✓\n\n${completedList}`, display: true },
+					{
+						customType: "plan-complete",
+						content: `**Plan Complete!** ✓\n\n${completedList}`,
+						display: true,
+					},
 					{ triggerTurn: false },
 				);
 				executionMode = false;
@@ -291,7 +316,9 @@ After completing a step, include a [DONE:n] tag in your response.`,
 		persistState();
 
 		// Show plan steps and prompt for next action
-		const todoListText = todoItems.map((t, i) => `${i + 1}. ☐ ${t.text}`).join("\n");
+		const todoListText = todoItems
+			.map((t, i) => `${i + 1}. ☐ ${t.text}`)
+			.join("\n");
 		const planTodoListMessage = {
 			customType: "plan-todo-list",
 			content: `**Plan Steps (${todoItems.length}):**\n\n${todoListText}`,
@@ -314,7 +341,9 @@ After completing a step, include a [DONE:n] tag in your response.`,
 			updateStatus(ctx);
 			persistState();
 
-			const remainingList = todoItems.map((t) => `${t.step}. ${t.text}`).join("\n");
+			const remainingList = todoItems
+				.map((t) => `${t.step}. ${t.text}`)
+				.join("\n");
 			const execMessage = `Execute the plan.
 
 Remaining steps:
@@ -346,14 +375,18 @@ After completing a step, include a [DONE:n] tag in your response.`;
 
 		// Restore persisted state
 		const planModeEntry = entries
-			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode")
+			.filter(
+				(e: { type: string; customType?: string }) =>
+					e.type === "custom" && e.customType === "plan-mode",
+			)
 			.pop() as { data?: PlanModeState } | undefined;
 
 		if (planModeEntry?.data) {
 			planModeEnabled = planModeEntry.data.enabled ?? planModeEnabled;
 			todoItems = planModeEntry.data.todos ?? todoItems;
 			executionMode = planModeEntry.data.executing ?? executionMode;
-			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
+			toolsBeforePlanMode =
+				planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 		}
 
 		// On resume: re-scan messages to rebuild completion state
@@ -374,7 +407,11 @@ After completing a step, include a [DONE:n] tag in your response.`;
 			const messages: AssistantMessage[] = [];
 			for (let i = executeIndex + 1; i < entries.length; i++) {
 				const entry = entries[i];
-				if (entry.type === "message" && "message" in entry && isAssistantMessage(entry.message as AgentMessage)) {
+				if (
+					entry.type === "message" &&
+					"message" in entry &&
+					isAssistantMessage(entry.message as AgentMessage)
+				) {
 					messages.push(entry.message as AssistantMessage);
 				}
 			}

@@ -429,6 +429,11 @@ Each dispatch gets a real pi session file (the child runs with `--session-dir <s
 - `/runs` (command): TUI screen (merge live `runningAgents` + `listRuns({ limit: 50 })`); non-TUI prints a text table.
 - Entry renderer for `subagent-session`: one dimmed line per run in the parent transcript.
 
+### Live workflow TUI widget
+
+- `subagent/workflow-widget.ts` (new, pure + dependency-free): `buildWorkflowWidgetLines(state, now?)` renders the plain-text `workflow` widget (current-task line for the running step(s) — or the waiting_approval step when paused — a `Tasks (N) — name` header, one icon+`agent — task` line per step with `✓/✗/⊘/⏳/⏸/○` statuses, and a `completed / pending` summary with optional `failed`/`skipped` counts). `buildWorkflowStatus(state)` returns the `wf:{completed}/{steps}` footer string while any step runs, else `""`. Both ref throughout `commit` in `executeWorkflowSteps` (and via `updateWorkflowWidget` in `index.ts`), so the widget refreshes on every state transition — initial all-pending, running, retries, waiting_approval pause/resume, per-step outcomes, fail and complete. On `session_shutdown` (quit) the widget/status are cleared so a stale workflow doesn't linger; it is intentionally NOT cleared on completion so the finished state persists until the next workflow. Rendered lines carry no theme color (UiHooks has no theme).
+- Tests: `subagent/tests/run-widget.sh` + `workflow-widget.test.mjs` (dependency-free — no @earendil-works modules needed; copies the current files like `run-unit.sh`).
+
 ## Future Enhancements
 
 - Workflow templates/presets

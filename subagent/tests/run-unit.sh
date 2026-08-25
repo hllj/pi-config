@@ -47,3 +47,7 @@ cp "$SCRIPT_DIR/unit.test.mjs" "$WORK/unit.test.mjs"
 cd "$WORK"
 printf "testing %s\n" "$SOURCE"
 node unit.test.mjs
+
+# Live workflow widget rendering lives in workflow-widget.ts (dependency-free,
+# bare workspace) — run it from the same entry point so it's always covered.
+"$SCRIPT_DIR/run-widget.sh"
