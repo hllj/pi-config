@@ -1,13 +1,13 @@
 // Unit tests for dev-workflows.ts template definitions.
 //
-// Run directly with Node >= 22 (type-stripping):  node dev-workflows.test.ts
+// Run directly with Node >= 22 (type-stripping):  node tests/dev-workflows.test.ts
 // Requires the repo's node_modules (@earendil-works symlinked via `npm run setup`)
 // and the subagent/ source to be resolvable from the repo root.
 //
 // These validate the pure template-building logic (agent sequences, {topic}
 // substitution, expect contracts) without spawning any subagent processes.
 
-import { DevWorkflowTemplates, detectWorkflow } from "./dev-workflows.ts";
+import { DevWorkflowTemplates, detectWorkflow } from "../dev-workflows.ts";
 
 let passed = 0;
 let failed = 0;
