@@ -9,10 +9,13 @@ import {
 	condense,
 	extractTitle,
 	lastWorklogLines,
+	prependWorklog,
 	setSection,
 	setTitle,
-	template,
 	stripGuides,
+	summarizeMessage,
+	template,
+	worklogLine,
 } from "./lib.ts";
 
 let failed = 0;
@@ -147,6 +150,38 @@ assertContains(
 	"- Shipped v1",
 );
 assertContains("appends new bullet", resultsBody, "- Cut p95 40%");
+
+// --- worklogLine / prependWorklog / summarizeMessage ---
+assertContains(
+	"worklogLine is timestamped bullet",
+	worklogLine(new Date("2026-01-02T03:04:05Z"), "went live"),
+	"- 2026-01-02 03:04 — went live",
+);
+
+const pre = prependWorklog(template("T"), "- 2026-01-02 03:04 — closed (quit)");
+const preLog = pre.split("## Worklog")[1];
+assertContains(
+	"prependWorklog inserts line at top of worklog",
+	preLog,
+	"closed (quit)",
+);
+assertEqualStrict(
+	"prependWorklog is above the notes-started line",
+	preLog.indexOf("closed (quit)") < preLog.indexOf("notes started"),
+	true,
+);
+
+assertEqualStrict(
+	"summarizeMessage collapses whitespace",
+	summarizeMessage("a\n\n b   c"),
+	"a b c",
+);
+assertEqualStrict(
+	"summarizeMessage caps length",
+	summarizeMessage("x".repeat(200), 20),
+	`${("x").repeat(19)}…`,
+);
+assertEqualStrict("summarizeMessage empty", summarizeMessage("   "), "");
 
 // --- worklog gets a timestamped line ---
 assertContains("worklog auto-log line present", noted2, "auto-log update");

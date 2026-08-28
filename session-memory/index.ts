@@ -23,6 +23,13 @@
  *     editor (like the todo list) whenever the notes have real content.
  *   - Auto-archive on compact: when a session is compacted, the current notes
  *     are snapshotted to archives/ (so they are never lost to summarization).
+ *   - Session-close finalization: on quit/reload/new/resume/fork a timestamped
+ *     worklog line marks the session boundary (so the notes track session ends).
+ *   - Periodic auto-log: after each settled agent run, a one-line worklog entry
+ *     summarizing the last assistant message is appended (deduped; on by
+ *     default, toggle `/notes auto-log`).
+ *   - Optional LLM refresh: `/notes auto-refresh` periodically nudges the agent
+ *     to refresh every section via the note tool (off by default).
  *
  * Override the storage root with env PI_MEMORY_DIR.
  */
@@ -47,9 +54,12 @@ import {
 	buildNotesWidget,
 	condense,
 	extractTitle,
+	prependWorklog,
 	setSection,
 	setTitle,
+	summarizeMessage,
 	template,
+	worklogLine,
 	type WidgetTheme,
 } from "./lib.ts";
 
@@ -166,6 +176,12 @@ const NOTE_PROMPT_GUIDELINES = [
 ];
 
 export default function (pi: ExtensionAPI) {
+	// Notes are maintained ONLY in the main session. Subagent children spawn
+	// `pi --mode json` with the same cwd and load this extension too; guard every
+	// hook so they don't seed/archive/auto-log from child processes (which would
+	// race the parent's read-modify-write of CURRENT.md).
+	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
+
 	// TUI widget: show condensed notes (Current State + recent Worklog) above the
 	// editor, mirrored in the footer. Uses a distinct key so it sits alongside
 	// todo/plan widgets. Rebuilt whenever notes change or the session restarts.
@@ -184,6 +200,7 @@ export default function (pi: ExtensionAPI) {
 	// Auto-seed: inject a condensed brief into context on the first user turn of a
 	// session if notes exist for this cwd. Sent as a hidden custom message.
 	pi.on("before_agent_start", async (_event, ctx) => {
+		if (isSubagentChild) return; // never seed from subagent children
 		refreshWidget(ctx);
 		const md = readCurrent(ctx.cwd);
 		if (!md) return;
@@ -203,10 +220,91 @@ export default function (pi: ExtensionAPI) {
 		refreshWidget(ctx);
 	});
 
+	// Session-close finalization: when an extension runtime is torn down (quit,
+	// reload, new, resume, fork) append a timestamped worklog line marking the
+	// boundary, so the notes file reflects that the session ended. Sync write so
+	// it always lands even during shutdown.
+	pi.on("session_shutdown", (event, ctx) => {
+		const md = readCurrent(ctx.cwd);
+		if (!md) return;
+		const line = worklogLine(new Date(), `session closed (${event.reason})`);
+		if (isSubagentChild) return;
+		writeCurrent(ctx.cwd, prependWorklog(md, line));
+		refreshWidget(ctx);
+	});
+
+	// Periodic auto-log: after each settled agent run, append a one-line worklog
+	// entry summarizing the last assistant message. Deduped per message id so a
+	// turn is logged exactly once; skips empty/trivial outputs. This keeps the
+	// notes updating on its own, not only when the model happens to call `note`.
+	let lastAutoLogKey: string | undefined;
+	let autoLogEnabled = true; // /notes auto-log
+	let autoRefreshEnabled = false; // /notes auto-refresh (opt-in LLM refresh)
+	let autoRefreshCountdown = 0;
+	const AUTO_REFRESH_EVERY = 5; // nudge the agent to refresh sections every N settled runs
+
+	pi.on("agent_settled", (_event, ctx) => {
+		if (isSubagentChild) return; // never write notes from subagent children
+		const md = readCurrent(ctx.cwd);
+		if (!md) return;
+		const entries = ctx.sessionManager.getEntries();
+		// Find the newest assistant message.
+		let lastKey: string | undefined;
+		let lastText = "";
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i] as {
+				type?: string;
+				id?: string;
+				message?: unknown;
+			};
+			if (entry.type !== "message") continue;
+			const msg = entry.message as
+				| { role?: string; content?: unknown[] }
+				| undefined;
+			if (!msg || msg.role !== "assistant") continue;
+			lastKey = entry.id;
+			lastText = (msg.content ?? [])
+				.filter(
+					(b): b is { type: string; text?: string } =>
+						typeof b === "object" &&
+						b !== null &&
+						(b as { type?: string }).type === "text",
+				)
+				.map((b) => b.text ?? "")
+				.join("\n");
+			break;
+		}
+
+		// Auto-log: one deterministic worklog line per settled run (on by default).
+		if (autoLogEnabled && lastKey && lastKey !== lastAutoLogKey) {
+			const summary = summarizeMessage(lastText);
+			if (summary) {
+				lastAutoLogKey = lastKey;
+				writeCurrent(ctx.cwd, prependWorklog(md, worklogLine(new Date(), summary)));
+				refreshWidget(ctx);
+			}
+		}
+
+		// Auto-refresh (opt-in): every N settled runs, queue a follow-up that nudges
+		// the agent to refresh ALL sections via the note tool. Bounded by the
+		// countdown so the refresh turn itself cannot re-trigger immediately.
+		if (autoRefreshEnabled) {
+			autoRefreshCountdown--;
+			if (autoRefreshCountdown <= 0) {
+				autoRefreshCountdown = AUTO_REFRESH_EVERY;
+				pi.sendUserMessage(
+					"Session maintenance: refresh the session notes with the note tool — update Current State, Files and Functions, Workflow, Learnings, Key results, and Errors & Corrections from the recent turns. Keep each concise.",
+					{ deliverAs: "followUp" },
+				);
+			}
+		}
+	});
+
 	// Auto-archive on compact: when the session is compacted (context summarized),
 	// snapshot the current notes so their content survives independently of the
 	// summarization. Skips when the notes are still just the empty template.
 	pi.on("session_compact", (_event, ctx) => {
+		if (isSubagentChild) return; // never archive from subagent children
 		const md = readCurrent(ctx.cwd);
 		if (!md) return;
 		if (condense(md) === null) return; // nothing real to preserve yet
@@ -228,6 +326,17 @@ export default function (pi: ExtensionAPI) {
 		parameters: MemoryParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (isSubagentChild) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Notes are maintained only in the main session.",
+						},
+					],
+					details: { ok: false, error: "subagent child" },
+				};
+			}
 			// Auto-title: adopt the pi session's display name as the notes title
 			// ("update the name by pi itself"), sourced live from the tool-call
 			// context. This keeps the `# Title` in sync with the session name so the
@@ -345,13 +454,35 @@ export default function (pi: ExtensionAPI) {
 	// /notes command: status / edit / new / seed.
 	pi.registerCommand("notes", {
 		description:
-			"Session notes: default shows path, `edit` opens the file in the editor, `new <title>` archives + restarts, `seed` lets you pull a past archived topic into context.",
+			"Session notes: default shows path, `edit` opens the file in the editor, `new <title>` archives + restarts, `seed` loads a past topic, `auto-log` toggles periodic worklog lines, `auto-refresh` toggles periodic LLM section refresh.",
 		handler: async (args, ctx) => {
 			const trimmed = (args ?? "").trim();
 			const space = trimmed.indexOf(" ");
 			const sub = (space === -1 ? trimmed : trimmed.slice(0, space)).toLowerCase();
 
 			switch (sub) {
+				case "auto-log": {
+					autoLogEnabled = !autoLogEnabled;
+					ctx.ui.notify(
+						autoLogEnabled
+							? "Auto-log on: each settled run appends one worklog line."
+							: "Auto-log off: settled runs no longer append worklog lines.",
+						autoLogEnabled ? "info" : "warning",
+					);
+					return;
+				}
+
+				case "auto-refresh": {
+					autoRefreshEnabled = !autoRefreshEnabled;
+					ctx.ui.notify(
+						autoRefreshEnabled
+							? "Auto-refresh on: every few runs the agent refreshes all notes sections."
+							: "Auto-refresh off: notes update only via note tool / auto-log / manual edit.",
+						autoRefreshEnabled ? "info" : "warning",
+					);
+					return;
+				}
+
 				case "edit": {
 					const current = ensureCurrent(ctx.cwd);
 					if (!ctx.hasUI) {
@@ -406,7 +537,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(
 						md === null
 							? `No session notes yet at ${currentPath(ctx.cwd)}. Create with /notes edit.`
-							: `Session notes: ${currentPath(ctx.cwd)} (${md.length} chars). /notes edit | new | seed`,
+							: `Session notes: ${currentPath(ctx.cwd)} (${md.length} chars). /notes edit | new | seed | auto-log | auto-refresh`,
 						"info",
 					);
 					return;

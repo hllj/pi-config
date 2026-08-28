@@ -173,6 +173,34 @@ export function stripGuides(body: string): string {
 		.join("\n");
 }
 
+/** Build a single timestamped worklog bullet, e.g. `- 2026-01-01 12:00 — text`. */
+export function worklogLine(when: Date, text: string): string {
+	const ts = when.toISOString().slice(0, 16).replace("T", " ");
+	return `- ${ts} — ${text.trim()}`;
+}
+
+/**
+ * Prepend a ready-made line at the top of the Worklog section (immediately after
+ * its `## Worklog` heading), creating the section if absent. Unlike appendSection
+ * this does NOT add an extra "auto-log update" line — the caller supplies the
+ * full bullet.
+ */
+export function prependWorklog(md: string, line: string): string {
+	const heading = SECTION_HEADINGS.worklog;
+	const lines = md.split("\n");
+	const wl = sectionStart(lines, heading);
+	if (wl === -1) {
+		return `${md.replace(/\s+$/, "")}\n\n## ${heading}\n${line}\n`;
+	}
+	return [...lines.slice(0, wl), line, ...lines.slice(wl)].join("\n");
+}
+
+/** Shrink multi-line message text to a single concise worklog line. */
+export function summarizeMessage(text: string, max = 90): string {
+	const one = text.replace(/\s+/g, " ").trim();
+	return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
+
 /** Replace the body of section `id` with `content` (creating the section if absent). */
 export function setSection(md: string, id: string, content: string): string {
 	const heading = SECTION_HEADINGS[id];
@@ -309,6 +337,19 @@ export function condense(md: string): string | null {
 	if (errors) {
 		parts.push(`## Errors & Corrections\n${errors}`);
 		hasContent = true;
+	}
+	const worklog = pick("worklog", 400);
+	if (worklog) {
+		// Skip the template's "notes started" placeholder line — real activity only.
+		const real = worklog
+			.split("\n")
+			.filter((l) => !/notes started/.test(l))
+			.join("\n")
+			.trim();
+		if (real) {
+			parts.push(`## Worklog (recent)\n${real}`);
+			hasContent = true;
+		}
 	}
 	// No real content beyond the title (only template guides) → nothing to seed.
 	if (!hasContent) return null;

@@ -37,6 +37,8 @@ The notes **`# Title` is kept in sync with the pi session's display name** (set 
 | `/notes edit` | open the file in the editor for manual editing |
 | `/notes new [title]` | archive the current notes, start fresh |
 | `/notes seed` | pick a past archived topic to load back in as the working doc |
+| `/notes auto-log` | toggle periodic worklog lines (on by default) |
+| `/notes auto-refresh` | toggle periodic LLM refresh of all sections (off by default) |
 
 ## TUI widget
 
@@ -45,6 +47,22 @@ When the notes have real content, a condensed widget is shown above the editor
 State**, and the last couple of **Worklog** entries — plus a `📝` footer status.
 It refreshes on session start and whenever notes change (note tool writes,
 `/notes edit` / `new` / `seed`).
+
+## Auto-update (so notes stay current on their own)
+
+Notes were previously written only when the model happened to call the `note` tool
+— so some sections (often only Key results) got filled while others stayed blank.
+Three automatic mechanisms keep the file living:
+
+- **Session-close finalization** — on quit / reload / new / resume / fork, a
+timestamped worklog line (`session closed (<reason>)`) marks the boundary, so the
+notes track when sessions end.
+- **Periodic auto-log** — after each settled agent run, one worklog line
+summarizing the last assistant message is appended (deduped per message, skips
+trivial output). On by default; toggle with `/notes auto-log`.
+- **Optional LLM refresh** — `/notes auto-refresh` (off by default) nudges the
+agent every few runs to refresh **all** sections (Current State, Files, Workflow,
+Learnings, Key results, Errors) via the `note` tool, at a token cost.
 
 ## Auto-archive on compact
 
