@@ -254,6 +254,51 @@ const WORKFLOWS: Record<DevWorkflowType, WorkflowTemplate> = {
 export const DevWorkflowTemplates: Record<DevWorkflowType, WorkflowTemplate> =
 	WORKFLOWS;
 
+/**
+ * Map a user prompt to a dev-workflow type when the intent is strong and
+ * unambiguous, or null otherwise. Ranked: the most specific intent wins.
+ * Exported for unit testing.
+ */
+export function detectWorkflow(prompt: string): DevWorkflowType | null {
+	const p = prompt.toLowerCase();
+	// Bail on meta-prompting / already-workflowed messages.
+	if (
+		p.startsWith("/") ||
+		p.includes("run_dev_workflow") ||
+		p.includes("/dev ") ||
+		p.trim().length < 12 ||
+		/^(what|how|why|is|are|can|do|does|list|show|explain|tell)/.test(p)
+	) {
+		return null;
+	}
+	// Ranked: most specific intent wins.
+	if (
+		/\b(refactor|restructure|split|merge|rename|extract|reorgani[sz]e|migrat)\b/.test(
+			p,
+		)
+	) {
+		return "refactor";
+	}
+	if (
+		/\b(fix\b|bug|bugfix|flaky|broken|crash|error|failing|fail\b|failure|race condition|segfault|exception|hang\b)/.test(
+			p,
+		)
+	) {
+		return "bugfix";
+	}
+	if (
+		/\b(add|implement|build|create|feature|support|introduce|set up|wire up)\b/.test(
+			p,
+		)
+	) {
+		return "swat";
+	}
+	if (/\b(understand|explore|map|learn|onboard|discover)\b/.test(p)) {
+		return "explore";
+	}
+	return null;
+}
+
 // ---------------------------------------------------------------------------
 // Shared executor (reuses subagent's engine)
 // ---------------------------------------------------------------------------
@@ -399,6 +444,13 @@ export default function (pi: ExtensionAPI) {
 		label: "Run Dev Workflow",
 		description:
 			"Run a preset development workflow (scout → planner → worker with verification/review gates) in one call. Reuses the subagent workflow engine. Pick a type and topic; the appropriate agents run in sequence.",
+		promptSnippet:
+			"run_dev_workflow: launch a preset multi-agent pipeline (swat/bugfix/refactor/explore) with one call",
+		promptGuidelines: [
+			"For multi-step tasks preferring a full pipeline, call run_dev_workflow ONCE with a type + topic rather than hand-assembling a chain of subagent steps.",
+			"Types: swat (full feature: scout→planner→worker TDD→verify→reviewer→worker), bugfix (debug: scout→worker RED→worker GREEN→reviewer), refactor (deep refactor with lens full scan), explore (parallel recon + synthesis).",
+			"Prefer run_dev_workflow over a bare subagent chain whenever the task matches one of these pipelines.",
+		],
 		parameters: Type.Object({
 			type: StringEnum(["swat", "bugfix", "refactor", "explore"] as const, {
 				description:
@@ -600,5 +652,41 @@ export default function (pi: ExtensionAPI) {
 				{ expandPromptTemplates: true },
 			);
 		},
+	});
+
+	// ---------------------------------- B: auto-trigger -----------------
+	// Detect strong dev-workflow intent in a user's prompt and steer the model
+	// to run_dev_workflow WITHOUT replacing the user's message (non-invasive
+	// `transform`). Off by default; toggle with /dev-auto.
+	let devAutoEnabled = false;
+
+	pi.registerCommand("dev-auto", {
+		description: "Toggle auto-triggering run_dev_workflow from task intent",
+		handler: async (_args, ctx) => {
+			devAutoEnabled = !devAutoEnabled;
+			ctx.ui.notify(
+				devAutoEnabled
+					? "Auto dev-workflow enabled: strong dev intent will steer to run_dev_workflow."
+					: "Auto dev-workflow disabled.",
+				devAutoEnabled ? "info" : "warning",
+			);
+		},
+	});
+
+	/** Strong-intent detection lives at module scope (exported for tests); the
+	 * input hook below only uses it. */
+	pi.on("input", async (event) => {
+		if (!devAutoEnabled) return;
+		if (event.source !== "interactive") return; // only user-typed prompts
+
+		const type = detectWorkflow(event.text);
+		if (!type) return;
+
+		const hint =
+			`\n\n(Auto-steer) This looks like a ${type} task. ` +
+			`Consider running it as a preset pipeline: call the run_dev_workflow tool ` +
+			`with type="${type}" and topic="${event.text.trim()}". ` +
+			`(Disable with /dev-auto if unwanted.)`;
+		return { action: "transform", text: event.text + hint };
 	});
 }
