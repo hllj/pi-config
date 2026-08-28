@@ -377,13 +377,13 @@ type OnUpdateCallback<TDetails = SubagentDetails> = (
 	partial: AgentToolResult<TDetails>,
 ) => void;
 
-interface DispatchDefaults {
+export interface DispatchDefaults {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 }
 
 /** Session-scoped data threaded into runSingleAgent for on-disk run records. */
-interface SessionLink {
+export interface SessionLink {
 	/** Resolved subagent run store directory. */
 	storeDir: string;
 	/** Parent (broker) session id. */
@@ -396,7 +396,7 @@ interface SessionLink {
  * Build a SessionLink from an extension context (tools and commands both expose
  * sessionManager). sessionDir may be undefined for in-memory sessions.
  */
-function buildSessionLink(sm?: {
+export function buildSessionLink(sm?: {
 	getSessionDir?(): string | undefined;
 	getSessionId?(): string | undefined;
 	getSessionFile?(): string | undefined;
@@ -425,7 +425,7 @@ export interface RunningAgentInfo {
 }
 
 /** Minimal UI surface needed to refresh the running-subagents widget. */
-interface UiHooks {
+export interface UiHooks {
 	setWidget?: (id: string, lines?: string[]) => void;
 	setStatus?: (id: string, text: string) => void;
 }
@@ -1260,7 +1260,7 @@ async function waitForSessionFile(
 }
 
 /** Everything a workflow step-execution loop needs from the dispatching tool. */
-interface WorkflowRunContext {
+export interface WorkflowRunContext {
 	pi: ExtensionAPI;
 	ctx: {
 		cwd: string;
@@ -1501,7 +1501,7 @@ async function executeSingleWorkflowStep(
  * parallelGroup members running concurrently, persists via `commit` on every
  * transition (per-step durability), and completes/fails the workflow state.
  */
-async function executeWorkflowSteps(
+export async function executeWorkflowSteps(
 	state: WorkflowState,
 	startIndex: number,
 	initialPrevious: { output: string; exitCode: number },

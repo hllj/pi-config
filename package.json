@@ -13,8 +13,9 @@
     "test:subagent": "bash subagent/tests/run-unit.sh",
     "test:subagent:widget": "bash subagent/tests/run-widget.sh",
     "test:todo": "node todo/todo-widget.test.ts",
+    "test:dev-workflows": "node dev-workflows.test.ts",
     "test:notes": "node session-memory/lib.test.ts",
-    "test": "npm run test:subagent && npm run test:subagent:widget && npm run test:todo && npm run test:notes",
+    "test": "npm run test:subagent && npm run test:subagent:widget && npm run test:todo && npm run test:dev-workflows && npm run test:notes",
     "check": "npm run setup && npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {
