@@ -25,6 +25,10 @@ Override the storage root with env `PI_MEMORY_DIR`.
 
 **The agent** maintains the notes automatically via the `note` tool (read / note / write / set_title / archive). Prompt guidelines nudge it to log results, learnings, and errors as it goes.
 
+### Auto-title from the session name
+
+The notes **`# Title` is kept in sync with the pi session's display name** (set via `/new <name>` or the SDK's `setSessionName`). On every `note` tool call the session name is read live from the tool-call context and adopted as the notes title, so pi itself names the notes — the model doesn't need to call `set_title` just to give them a title. A brand-new notes file starts with the session name directly. An existing file is re-titled only while its title is still the placeholder `Untitled session`, so a manual or previously-chosen explicit title (via `note set_title`) is never overwritten.
+
 **You** control it with `/notes`:
 
 | command | what it does |

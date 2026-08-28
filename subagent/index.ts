@@ -1827,7 +1827,7 @@ export default function (pi: ExtensionAPI) {
 		name: "list_agents",
 		label: "List Agents",
 		description:
-			"List available subagents with optional filtering by scope and name pattern.",
+			"List available subagents (name, description, tools, model) with optional filtering by scope and name pattern. Run this to discover which agent to dispatch before calling subagent.",
 		parameters: Type.Object({
 			scope: Type.Optional(AgentScopeSchema),
 			namePattern: Type.Optional(
@@ -3272,7 +3272,8 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Subagent",
 		description: [
-			"Delegate tasks to specialized subagents with isolated context.",
+			"Delegate tasks to subagents with isolated context windows.",
+			"Pick the agent that fits the work: scout (recon), planner (plan), worker (TDD implementation), reviewer (review), general (all-rounder fallback). Run list_agents to see the live catalog with per-agent tools and models.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder), workflow (steps with conditions, error handlers, approval gates, parallelGroup).",
 			`Every dispatch is recorded to the on-disk run store (record.json + the child's own pi session file); inspect with list_subagent_sessions / get_subagent_session or the /runs command.`,
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,

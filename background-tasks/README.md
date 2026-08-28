@@ -23,11 +23,17 @@ This extension allows Pi to:
   command: string;          // Shell command to execute
   label?: string;           // Optional human-readable label
   cwd?: string;             // Working directory (defaults to current)
-  timeout?: number;         // Optional timeout in ms
+  timeout?: number;         // Optional hard timeout in ms (kills the task)
+  warnAtMs?: number;        // Optional soft warn threshold in ms (flags + notifies, does NOT kill)
 }
 ```
 
 Returns a task ID immediately. The task runs in a background child process.
+
+The `warnAtMs` threshold pairs with `timeout`: after `warnAtMs` the running task
+is flagged with a ⚠ marker, a UI notification fires (with output-so-far), and
+the task **keeps running** — useful for detecting long-running (docker/backend)
+tasks without killing them. `timeout` remains the hard kill.
 
 ### `task_stop` — Stop a running task
 
@@ -38,7 +44,22 @@ Returns a task ID immediately. The task runs in a background child process.
 }
 ```
 
-Sends SIGTERM, then SIGKILL after a 5-second grace period.
+Sends SIGTERM, then SIGKILL after a 5-second grace period. The task stays in
+`task_list` as a `stopped` record.
+
+### `task_remove` — Remove a task permanently
+
+```typescript
+// Parameters
+{
+  taskId: string;  // Full or short (first 8 chars) task ID
+}
+```
+
+Stop the process if it is still running (SIGTERM → SIGKILL), then drop the
+task from the in-memory list completely and record a tombstone so it is *not*
+restored on the next session reload. Unlike `task_stop` no record is left
+behind — ideal for cleaning up stray docker containers / backend dev servers.
 
 ### `task_list` — List all tasks
 
@@ -80,7 +101,20 @@ Polls until the task completes or the max wait is reached. Streams progress via 
 
 ### `/tasks` — Interactive task viewer
 
-Opens a TUI dialog showing all tasks with colored status icons. Works in terminal mode; falls back to console print in non-TUI modes.
+Opens a TUI dialog showing all tasks with colored status icons. The list is
+**interactive**:
+
+- `↑`/`↓` or `j`/`k` — move selection
+- `s` — stop the selected task (SIGTERM, only if running)
+- `d` — remove the selected task permanently (press `d` again to confirm,
+  `Esc` to cancel). Equivalent to `task_remove`
+- `Enter` — close and show task status via `task_status`
+- `Esc`/`Ctrl+C` — close
+
+Works in terminal mode; falls back to console print in non-TUI modes.
+
+> Note: in non-TUI mode a static row is simply printed; the live selection UI
+> requires the TUI.
 
 ## Architecture
 
@@ -90,17 +124,21 @@ Task Lifecycle:
                     → Failed    (exitCode≠0)
                     → Stopped   (SIGTERM)
                     → Timeout   (timeout exceeded)
+  Removed → deleted from store + tombstone (won't restore)
 
 Process Management:
   • child_process.spawn() with shell:true
   • Captured stdout/stderr (up to 512KB/128KB)
   • SIGTERM → 5s grace → SIGKILL
+  • Soft warn threshold (warnAtMs): flags ⚠ + notifies, never kills
   • Signal-aware: respects abort signal from agent
 
 Persistence:
   • In-memory Map<taskId, TaskInfo> for live tasks
   • pi.appendEntry("background-task", data) for session persistence
-  • Restored from session entries on session_start
+  • pi.appendEntry("background-task-removed", {id}) tombstones removed tasks
+    so they are skipped when restoring session entries
+  • Restored from session entries on session_start (removed ids filtered out)
 
 ### Shared store (`store.ts`)
 

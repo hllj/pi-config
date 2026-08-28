@@ -46,6 +46,7 @@ import {
 	buildNotesStatus,
 	buildNotesWidget,
 	condense,
+	extractTitle,
 	setSection,
 	setTitle,
 	template,
@@ -227,11 +228,30 @@ export default function (pi: ExtensionAPI) {
 		parameters: MemoryParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// Auto-title: adopt the pi session's display name as the notes title
+			// ("update the name by pi itself"), sourced live from the tool-call
+			// context. This keeps the `# Title` in sync with the session name so the
+			// model doesn't have to call `set_title` just to give the notes a name.
+			// A fresh file (created below) starts with the session name directly;
+			// an existing file is re-titled only while it's still the placeholder
+			// "Untitled session" — a manual/previous explicit title is never
+			// clobbered.
+			const sessionName = ctx.sessionManager.getSessionName()?.trim() || undefined;
+			const existing = readCurrent(ctx.cwd);
+			if (
+				existing !== null &&
+				sessionName &&
+				extractTitle(existing) === "Untitled session"
+			) {
+				writeCurrent(ctx.cwd, setTitle(existing, sessionName));
+				refreshWidget(ctx);
+			}
+
 			switch (params.action) {
 				case "read": {
 					const md = readCurrent(ctx.cwd);
 					if (!md) {
-						writeCurrent(ctx.cwd, template());
+						writeCurrent(ctx.cwd, template(sessionName));
 						refreshWidget(ctx);
 						return {
 							content: [
@@ -253,7 +273,11 @@ export default function (pi: ExtensionAPI) {
 					const section = params.section ?? "state";
 					writeCurrent(
 						ctx.cwd,
-						appendSection(ensureCurrent(ctx.cwd), section, params.content),
+						appendSection(
+							ensureCurrent(ctx.cwd, sessionName),
+							section,
+							params.content,
+						),
 					);
 					refreshWidget(ctx);
 					return {
@@ -274,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 					const section = params.section ?? "state";
 					writeCurrent(
 						ctx.cwd,
-						setSection(ensureCurrent(ctx.cwd), section, params.content),
+						setSection(ensureCurrent(ctx.cwd, sessionName), section, params.content),
 					);
 					refreshWidget(ctx);
 					return {
@@ -284,8 +308,8 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				case "set_title": {
-					const title = params.title?.trim() || "Untitled session";
-					writeCurrent(ctx.cwd, setTitle(ensureCurrent(ctx.cwd), title));
+					const title = params.title?.trim() || sessionName || "Untitled session";
+					writeCurrent(ctx.cwd, setTitle(ensureCurrent(ctx.cwd, title), title));
 					refreshWidget(ctx);
 					return {
 						content: [{ type: "text", text: `Title set: "${title}"` }],

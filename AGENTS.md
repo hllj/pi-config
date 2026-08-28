@@ -34,11 +34,11 @@ pi-config/                 (= ~/.pi/agent/extensions)
 ├── trigger-compact.ts     root-level extension: /trigger-compact command
 ├── web-tools.ts           root-level extension: web_search / web_fetch tools
 │
-├── background-tasks/      extension (index.ts): task_run/task_stop/task_list/etc
+├── background-tasks/      extension (index.ts): task_run/task_stop/task_remove/task_list/task_status/task_wait + interactive /tasks TUI
 ├── bash-tools/            extension (index.ts): file_sizes / run_test / capture_output (context-economical read-decision, targeted-verification, and spill-to-disk full-output tools); capture.ts is the shared spill-to-disk runner
 ├── monitor/               extension (index.ts): monitor_* tools; own package.json + node_modules (ws dep)
 ├── plan-mode/             extension (index.ts): /plan, /plan-todos, Ctrl+Alt+P
-├── subagent/              extension (index.ts): scout/planner/reviewer/worker + run store + workflow engine
+├── subagent/              extension (index.ts): scout/planner/reviewer/worker/general + run store + workflow engine
 │   ├── agents/*.md        subagent definitions (YAML frontmatter: name/description/model/tools)
 │   ├── prompts/*.md       bundled workflows (/implement, /scout-and-plan, /implement-and-review)
 │   └── tests/             unit suites (run-unit.sh, run-widget.sh) + e2e-smoke.sh

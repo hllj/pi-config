@@ -36,7 +36,8 @@ pi-config/subagent/          # Symlinked to ~/.pi/agent/extensions/subagent
 │   ├── scout.md              # Fast codebase recon with pi-lens
 │   ├── planner.md            # Implementation plans with pi-lens
 │   ├── reviewer.md           # Code review with pi-lens diagnostics
-│   └── worker.md             # Test-first (TDD) implementation with pi-lens verification
+│   ├── worker.md             # Test-first (TDD) implementation with pi-lens verification
+│   └── general.md            # All-rounder fallback: investigate/plan/implement/verify end-to-end
 ├── prompts/                  # Workflow prompts ★ NOW CO-LOCATED HERE
 │   ├── implement.md          # scout → planner → worker
 │   ├── scout-and-plan.md     # scout → planner (no implementation)

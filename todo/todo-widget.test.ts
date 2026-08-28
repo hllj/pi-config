@@ -5,6 +5,7 @@
 import {
 	buildTodoListWidget,
 	buildTodoStatus,
+	isValidTodoDetails,
 	type TodoWidgetTheme,
 } from "./todo-widget.ts";
 
@@ -161,6 +162,29 @@ check(
 		`  ${theme.fg("success", "✓ ")}${theme.fg("muted", theme.strikethrough("lint"))}`,
 		`${theme.fg("accent", "+0")} pending, ${theme.fg("success", "1 completed")}`,
 	],
+);
+
+// ---- details validity guard (regression: validation-error results have `details: {}`) ----
+check("empty details object -> invalid", isValidTodoDetails({}), false);
+check("undefined details -> invalid", isValidTodoDetails(undefined), false);
+check("null details -> invalid", isValidTodoDetails(null), false);
+check(
+	"todos: null -> invalid",
+	isValidTodoDetails({ action: "list", todos: null }),
+	false,
+);
+check(
+	"todos not an array -> invalid",
+	isValidTodoDetails({ action: "list", todos: "x" }),
+	false,
+);
+check(
+	"valid add snapshot -> valid",
+	isValidTodoDetails({
+		action: "add",
+		todos: [{ id: 1, text: "x", done: false }],
+	}),
+	true,
 );
 
 if (failed > 0) {

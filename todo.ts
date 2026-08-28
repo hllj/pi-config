@@ -21,6 +21,7 @@ import { Type } from "typebox";
 import {
 	buildTodoListWidget,
 	buildTodoStatus,
+	isValidTodoDetails,
 	type TodoWidgetTheme,
 } from "./todo/todo-widget.ts";
 import { getTaskStatus } from "./background-tasks/store.ts";
@@ -174,7 +175,10 @@ export default function (pi: ExtensionAPI) {
 			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
 
 			const details = msg.details as TodoDetails | undefined;
-			if (details) {
+			// Only accept snapshots that carry a real `todos` array. Malformed
+			// tool results (e.g. `{}` from a validation error) must not overwrite
+			// the in-memory state with `undefined`.
+			if (details && isValidTodoDetails(details)) {
 				todos = details.todos;
 				nextId = details.nextId;
 			}
@@ -359,9 +363,22 @@ export default function (pi: ExtensionAPI) {
 				return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
 			}
 
-			const todoList = details.todos;
+			const todoList = isValidTodoDetails(details) ? details.todos : [];
+			// Every path below must return a Text — never undefined, or the
+			// TUI's Box.render crashes on `undefined.render`. An unknown action
+			// (e.g. a malformed `details` from a validation error) falls back to
+			// the empty list branch.
+			const action = (details as TodoDetails).action;
+			if (!isValidTodoDetails(details) || !action) {
+				const text = result.content[0];
+				return new Text(
+					theme.fg("error", text?.type === "text" ? text.text : "Invalid result"),
+					0,
+					0,
+				);
+			}
 
-			switch (details.action) {
+			switch (action) {
 				case "list": {
 					if (todoList.length === 0) {
 						return new Text(theme.fg("dim", "No todos"), 0, 0);
@@ -383,6 +400,9 @@ export default function (pi: ExtensionAPI) {
 
 				case "add": {
 					const added = todoList[todoList.length - 1];
+					if (!added) {
+						return new Text(theme.fg("error", "Invalid add result"), 0, 0);
+					}
 					return new Text(
 						theme.fg("success", "✓ Added ") +
 							theme.fg("accent", `#${added.id}`) +
@@ -405,6 +425,9 @@ export default function (pi: ExtensionAPI) {
 						0,
 						0,
 					);
+
+				default:
+					return new Text(theme.fg("error", "Unknown todo action"), 0, 0);
 			}
 		},
 	});

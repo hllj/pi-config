@@ -32,8 +32,10 @@ export interface TaskInfo {
 	stdout: string;
 	stderr: string;
 	timeout: number | null; // ms, null = no timeout
+	warnAtMs: number | null; // soft warn threshold; null = no warning. Does NOT kill — only flags.
 	error?: string;
 	stopReason?: string;
+	warning?: string; // set when warnAtMs exceeded while still running
 }
 
 /** In-memory live task store (shared across extensions). */

@@ -34,6 +34,7 @@ interface TaskDetails {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const TASK_STORAGE_TYPE = "background-task";
+const REMOVED_STORAGE_TYPE = "background-task-removed";
 const WIDGET_ID = "background-tasks";
 const STATUS_ID = "bg-tasks";
 const STOP_GRACE_MS = 5000; // SIGTERM → SIGKILL grace period
@@ -44,6 +45,9 @@ const MAX_LOG_LINES = 200;
 // `tasks` map is shared via ./store.ts (imported above). Lifecycle handles for
 // live child processes stay local to this extension.
 const processes = new Map<string, ChildProcess>();
+// Task IDs the user has explicitly removed. Keyed by id; the timestamp lets
+// the tombstone be persisted so a removed task isn't resurrected on reload.
+const removedTasks = new Map<string, number>();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -78,6 +82,10 @@ function formatBytes(text: string): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+function warningMarker(task: TaskInfo): string {
+	return task.warning ? ` ⚠ ${task.warning}` : "";
+}
+
 function getTaskSummary(task: TaskInfo): string {
 	const icon =
 		task.status === "running"
@@ -96,7 +104,7 @@ function getTaskSummary(task: TaskInfo): string {
 				? formatDuration(Date.now() - task.startedAt)
 				: "—";
 	const label = task.label || task.command.slice(0, 60);
-	return `${icon} #${task.id.slice(0, 8)} ${label} [${task.status}, ${elapsed}]`;
+	return `${icon} #${task.id.slice(0, 8)} ${label} [${task.status}, ${elapsed}]${warningMarker(task)}`;
 }
 
 function persistTask(
@@ -125,6 +133,8 @@ function persistTask(
 				stdout: truncateOutput(task.stdout, 50),
 				stderr: truncateOutput(task.stderr, 20),
 				timeout: task.timeout,
+				warnAtMs: task.warnAtMs,
+				warning: task.warning,
 				error: task.error,
 				stopReason: task.stopReason,
 			});
@@ -153,7 +163,7 @@ function updateWidget(ctx: {
 				? formatDuration(Date.now() - task.startedAt)
 				: "—";
 			const label = task.label || task.command.slice(0, 40);
-			lines.push(`  ⏳ ${label} (${elapsed})`);
+			lines.push(`  ⏳ ${label} (${elapsed})${warningMarker(task)}`);
 		}
 	}
 
@@ -248,9 +258,27 @@ async function startBackgroundTask(
 		}, task.timeout);
 	}
 
+	// Handle soft warn threshold — flags the task but does NOT kill it
+	let warnHandle: ReturnType<typeof setTimeout> | undefined;
+	if (task.warnAtMs && task.warnAtMs > 0) {
+		warnHandle = setTimeout(() => {
+			const current = tasks.get(task.id);
+			if (current && current.status === "running") {
+				current.warning = `still running after ${formatDuration(current.warnAtMs)}`;
+				updateWidget(ui);
+				persistTask(ui, current);
+				ui.notify?.(
+					`⚠ Task "${current.label}" still running after ${formatDuration(current.warnAtMs)}${current.stdout ? "; output so far:\n" + truncateOutput(current.stdout.trim(), 10) : ""}`,
+					"warning",
+				);
+			}
+		}, task.warnAtMs);
+	}
+
 	// Handle process exit
 	proc.on("close", (exitCode) => {
 		if (timeoutHandle) clearTimeout(timeoutHandle);
+		if (warnHandle) clearTimeout(warnHandle);
 		processes.delete(task.id);
 
 		// Only update if not already stopped/timeout (which may have set status)
@@ -265,6 +293,7 @@ async function startBackgroundTask(
 
 	proc.on("error", (err) => {
 		if (timeoutHandle) clearTimeout(timeoutHandle);
+		if (warnHandle) clearTimeout(warnHandle);
 		processes.delete(task.id);
 		if (task.status === "running") {
 			task.status = "failed";
@@ -299,12 +328,53 @@ function stopTask(taskId: string, reason = "manual"): boolean {
 	return true;
 }
 
-// ─── Persist running tasks to session on shutdown ────────────────────────────
+// ─── Persist running tasks to session on shutdown ────────────────────────────────────
 
 function stopAllTasks(reason = "session_shutdown") {
 	for (const [id] of processes) {
 		stopTask(id, reason);
 	}
+}
+
+/**
+ * Remove a task entirely: stop the live process if running, drop it from the
+ * in-memory store, and record a tombstone so it isn't resurrected from session
+ * entries on the next session_start.
+ */
+function removeTask(
+	taskId: string,
+	append: (type: string, data?: unknown) => void,
+): { ok: boolean; wasRunning: boolean } {
+	const task = tasks.get(taskId);
+	if (!task) return { ok: false, wasRunning: false };
+
+	const proc = processes.get(taskId);
+	const wasRunning = task.status === "running";
+
+	// Stop the live process (SIGTERM → SIGKILL after grace period)
+	if (wasRunning && proc) {
+		proc.kill("SIGTERM");
+		setTimeout(() => {
+			if (!proc.killed) proc.kill("SIGKILL");
+		}, STOP_GRACE_MS);
+	}
+	processes.delete(taskId);
+
+	// Drop from live store + record tombstone so it stays gone after reload
+	tasks.delete(taskId);
+	removedTasks.set(taskId, task.createdAt);
+	try {
+		append(REMOVED_STORAGE_TYPE, {
+			id: taskId,
+			label: task.label,
+			command: task.command,
+			removedAt: Date.now(),
+		});
+	} catch {
+		// best-effort persistence
+	}
+
+	return { ok: true, wasRunning };
 }
 
 // ─── Extension ───────────────────────────────────────────────────────────────
@@ -317,8 +387,23 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Lifecycle: restore widget on new session ──
 	pi.on("session_start", (_event, ctx) => {
-		// Restore previously persisted tasks from session entries
+		// Seeds removed-task tombstones so persisted task entries won't be resurrected
+		const removedIds = new Set<string>();
 		const entries = ctx.sessionManager.getEntries();
+		for (const entry of entries) {
+			const type = (entry as { type: string }).type;
+			const data = (entry as { data?: unknown }).data;
+			if (
+				type === REMOVED_STORAGE_TYPE &&
+				data &&
+				typeof data === "object" &&
+				"id" in (data as Record<string, unknown>)
+			) {
+				removedIds.add((data as Record<string, unknown>).id as string);
+			}
+		}
+
+		// Restore previously persisted tasks from session entries
 		for (const entry of entries) {
 			const type = (entry as { type: string }).type;
 			const data = (entry as { data?: unknown }).data;
@@ -328,7 +413,10 @@ export default function (pi: ExtensionAPI) {
 				typeof data === "object" &&
 				"id" in (data as Record<string, unknown>)
 			) {
-				if (!tasks.has((data as Record<string, unknown>).id as string)) {
+				if (
+					!removedIds.has((data as Record<string, unknown>).id as string) &&
+					!tasks.has((data as Record<string, unknown>).id as string)
+				) {
 					const restoredTask: TaskInfo = {
 						id: (data as Record<string, unknown>).id as string,
 						label: ((data as Record<string, unknown>).label as string) || "",
@@ -346,6 +434,9 @@ export default function (pi: ExtensionAPI) {
 						stdout: ((data as Record<string, unknown>).stdout as string) || "",
 						stderr: ((data as Record<string, unknown>).stderr as string) || "",
 						timeout: ((data as Record<string, unknown>).timeout as number) || null,
+						warnAtMs: ((data as Record<string, unknown>).warnAtMs as number) || null,
+						warning:
+							((data as Record<string, unknown>).warning as string) || undefined,
 						error: ((data as Record<string, unknown>).error as string) || undefined,
 						stopReason:
 							((data as Record<string, unknown>).stopReason as string) || undefined,
@@ -387,7 +478,13 @@ export default function (pi: ExtensionAPI) {
 			timeout: Type.Optional(
 				Type.Number({
 					description:
-						"Optional timeout in milliseconds. Task is killed if it exceeds this.",
+						"Optional hard timeout in milliseconds. Task is killed if it exceeds this.",
+				}),
+			),
+			warnAtMs: Type.Optional(
+				Type.Number({
+					description:
+						"Optional soft warn threshold in milliseconds. Task is flagged ⚠ + notified at this duration but NOT killed.",
 				}),
 			),
 		}),
@@ -409,6 +506,7 @@ export default function (pi: ExtensionAPI) {
 				stdout: "",
 				stderr: "",
 				timeout: params.timeout || null,
+				warnAtMs: params.warnAtMs || null,
 			};
 
 			startBackgroundTask(task, {
@@ -522,6 +620,78 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ── Tool: task_remove ──
+	pi.registerTool({
+		name: "task_remove",
+		label: "Remove a Background Task",
+		description: [
+			"Remove a background task entirely: stop its process if still running",
+			"(SIGTERM → SIGKILL) and drop it from the task list permanently.",
+			"Unlike task_stop it does not leave a stopped record behind —",
+			"the task is deleted and won't be restored on session reload.",
+		].join(" "),
+		parameters: Type.Object({
+			taskId: Type.String({
+				description: "ID of the task to remove (full or short ID)",
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const resolvedId = resolveTaskId(params.taskId);
+			if (!resolvedId) {
+				return {
+					content: [{ type: "text", text: `Task not found: ${params.taskId}` }],
+					details: {
+						tasks: Array.from(tasks.values()),
+						runningCount: 0,
+					} satisfies TaskDetails,
+					isError: true,
+				};
+			}
+
+			const wasRunning = tasks.get(resolvedId)?.status === "running";
+			const removed = removeTask(resolvedId, (type, data) =>
+				pi.appendEntry(type, data),
+			);
+
+			if (!removed.ok) {
+				return {
+					content: [{ type: "text", text: `Task not found: ${params.taskId}` }],
+					details: {
+						tasks: Array.from(tasks.values()),
+						runningCount: Array.from(tasks.values()).filter(
+							(t) => t.status === "running",
+						).length,
+					} satisfies TaskDetails,
+					isError: true,
+				};
+			}
+
+			updateWidget({
+				setWidget: (id, lines) => ctx.ui.setWidget(id, lines ?? []),
+				setStatus: (id, text) => ctx.ui.setStatus(id, text),
+			});
+			ctx.ui.notify(
+				`Task removed: ${resolvedId.slice(0, 8)}${wasRunning ? " (was running — SIGTERM sent)" : ""}`,
+				"warning",
+			);
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Task #${resolvedId.slice(0, 8)} removed${wasRunning ? " (process stopped, SIGTERM sent)" : ""}. It will not appear in task_list or be restored on session reload.`,
+					},
+				],
+				details: {
+					tasks: Array.from(tasks.values()),
+					runningCount: Array.from(tasks.values()).filter(
+						(t) => t.status === "running",
+					).length,
+				} satisfies TaskDetails,
+			};
+		},
+	});
+
 	// ── Tool: task_list ──
 	pi.registerTool({
 		name: "task_list",
@@ -582,7 +752,7 @@ export default function (pi: ExtensionAPI) {
 					const label = t.label || t.command.slice(0, 80);
 					const shortId = t.id.slice(0, 8);
 					const outputSize = formatBytes(t.stdout + t.stderr);
-					return `  ${icon} #${shortId} ${label} [${t.status}, ${elapsed}, out:${outputSize}]`;
+					return `  ${icon} #${shortId} ${label} [${t.status}, ${elapsed}, out:${outputSize}]${warningMarker(t)}`;
 				}),
 			].join("\n");
 
@@ -639,6 +809,9 @@ export default function (pi: ExtensionAPI) {
 
 			if (task.error) parts.push(`  Error:     ${task.error}`);
 			if (task.stopReason) parts.push(`  Stop Reason: ${task.stopReason}`);
+			if (task.warning) parts.push(`  ⚠ Warning:  ${task.warning}`);
+			if (task.warnAtMs)
+				parts.push(`  Warn At:   ${formatDuration(task.warnAtMs)} (soft)`);
 			if (task.timeout) parts.push(`  Timeout:   ${formatDuration(task.timeout)}`);
 
 			if (showOutput) {
@@ -787,40 +960,58 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Command: /tasks ──
 	pi.registerCommand("tasks", {
-		description: "Show all background tasks with interactive TUI view",
+		description:
+			"Show all background tasks with interactive TUI view (↑/↓ select, s stop, d delete)",
 		handler: async (_args, ctx) => {
-			const allTasks = Array.from(tasks.values()).sort(
-				(a, b) => b.createdAt - a.createdAt,
-			);
+			const snapTasks = () =>
+				Array.from(tasks.values()).sort((a, b) => b.createdAt - a.createdAt);
 
-			if (allTasks.length === 0) {
+			if (snapTasks().length === 0) {
 				ctx.ui.notify("No background tasks.", "info");
 				return;
 			}
 
 			if (ctx.mode !== "tui") {
 				// Fallback: print to console
-				for (const task of allTasks) {
+				for (const task of snapTasks()) {
 					console.log(getTaskSummary(task));
 				}
 				return;
 			}
 
-			// Interactive TUI view
-			await ctx.ui.custom((_tui, theme, _kb, done) => {
+			// Interactive TUI view: selectable rows, s = stop, d = remove
+			await ctx.ui.custom((tui, theme, _kb, done) => {
+				let selectedIndex = 0;
+				let pendingRemoveId: string | null = null;
+				let renderAction = "";
+
+				const refresh = () => tui.requestRender();
+
 				const renderTasks = (width: number): string[] => {
+					const allTasks = snapTasks();
+					if (selectedIndex >= allTasks.length) {
+						selectedIndex = Math.max(0, allTasks.length - 1);
+					}
+					if (pendingRemoveId && !allTasks.some((t) => t.id === pendingRemoveId)) {
+						pendingRemoveId = null;
+					}
+
 					const lines: string[] = [];
 					const th = theme;
+					const runningCount = allTasks.filter((t) => t.status === "running").length;
 
 					lines.push("");
 					lines.push(
 						th.fg("accent", th.bold(" Background Tasks ")) +
-							th.fg("muted", ` (${allTasks.length} total)`),
+							th.fg("muted", ` (${allTasks.length} total, ${runningCount} running)`),
 					);
 					lines.push(th.fg("borderMuted", "─".repeat(Math.min(width, 60))));
 					lines.push("");
 
-					for (const task of allTasks) {
+					allTasks.forEach((task, i) => {
+						const selected = i === selectedIndex;
+						const rowColor = selected ? "text" : "muted";
+
 						const icon =
 							task.status === "running"
 								? th.fg("accent", "⏳")
@@ -832,7 +1023,7 @@ export default function (pi: ExtensionAPI) {
 											? th.fg("warning", "⊘")
 											: th.fg("warning", "⏰");
 
-						const shortId = th.fg("dim", `#${task.id.slice(0, 8)}`);
+						const shortId = th.fg("dim", ` #${task.id.slice(0, 8)}`);
 						const label = task.label || task.command.slice(0, 60);
 						const time = task.startedAt
 							? th.fg(
@@ -840,12 +1031,32 @@ export default function (pi: ExtensionAPI) {
 									formatDuration((task.completedAt ?? Date.now()) - task.startedAt),
 								)
 							: "";
+						const warn = warningMarker(task);
 
-						lines.push(`  ${icon} ${shortId} ${label} ${time}`);
-					}
+						let row = `${icon}${shortId} ${label} ${time}${warn}`;
+						if (pendingRemoveId === task.id) {
+							row += " ";
+						}
+						lines.push(th.fg(rowColor, row));
+					});
 
 					lines.push("");
-					lines.push(th.fg("dim", " Press Escape or Ctrl+C to close"));
+					if (pendingRemoveId) {
+						lines.push(
+							th.fg(
+								"warning",
+								" Really remove this task? Press d again to confirm, Esc to cancel",
+							),
+						);
+					} else if (renderAction) {
+						lines.push(th.fg("dim", renderAction));
+					}
+					lines.push(
+						th.fg(
+							"dim",
+							" ↑/↓ or j/k select · Enter show status · s stop · d remove · Esc/Ctrl+C close",
+						),
+					);
 					lines.push("");
 
 					return lines;
@@ -853,10 +1064,80 @@ export default function (pi: ExtensionAPI) {
 
 				return {
 					render: (width: number) => renderTasks(width),
-					invalidate: () => {},
+					invalidate: () => refresh(),
 					handleInput: (data: string) => {
+						const all = snapTasks();
+
 						if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-							done(undefined);
+							if (pendingRemoveId) {
+								pendingRemoveId = null;
+								refresh();
+							} else {
+								done(undefined);
+							}
+							return;
+						}
+
+						if (matchesKey(data, "up") || matchesKey(data, "k")) {
+							selectedIndex = Math.max(0, selectedIndex - 1);
+							refresh();
+							return;
+						}
+						if (matchesKey(data, "down") || matchesKey(data, "j")) {
+							selectedIndex = Math.min(all.length - 1, selectedIndex + 1);
+							refresh();
+							return;
+						}
+
+						const selected = all[selectedIndex];
+						if (!selected) return;
+
+						// remove / confirm-remove
+						if (
+							matchesKey(data, "d") ||
+							matchesKey(data, "x") ||
+							matchesKey(data, "delete")
+						) {
+							if (pendingRemoveId === selected.id) {
+								const wasRunning = selected.status === "running";
+								removeTask(selected.id, (type, entry) => pi.appendEntry(type, entry));
+								updateWidget({
+									setWidget: (id, lines) => ctx.ui.setWidget(id, lines ?? []),
+									setStatus: (id, text) => ctx.ui.setStatus(id, text),
+								});
+								renderAction = `Removed #${selected.id.slice(0, 8)}${wasRunning ? " (was running — SIGTERM sent)" : ""}`;
+								pendingRemoveId = null;
+								selectedIndex = Math.min(selectedIndex, snapTasks().length - 1);
+							} else {
+								pendingRemoveId = selected.id;
+							}
+							refresh();
+							return;
+						}
+
+						// stop (only when running)
+						if (matchesKey(data, "s")) {
+							if (selected.status === "running") {
+								stopTask(selected.id, "manual");
+								persistTask(
+									{ appendEntry: (type, d) => pi.appendEntry(type, d) },
+									selected,
+								);
+								updateWidget({
+									setWidget: (id, lines) => ctx.ui.setWidget(id, lines ?? []),
+									setStatus: (id, text) => ctx.ui.setStatus(id, text),
+								});
+								renderAction = `Stopped #${selected.id.slice(0, 8)} (SIGTERM sent)`;
+							} else {
+								renderAction = `#${selected.id.slice(0, 8)} is not running (${selected.status})`;
+							}
+							refresh();
+							return;
+						}
+
+						// Enter — show task status
+						if (matchesKey(data, "enter")) {
+							done({ showId: selected.id });
 						}
 					},
 				};

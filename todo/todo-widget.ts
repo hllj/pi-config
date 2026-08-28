@@ -8,6 +8,22 @@
 /** Max todo items rendered in the widget above the editor. */
 export const MAX_TODO_WIDGET_ITEMS = 5;
 
+/**
+ * True when `details` carries a usable `todos` array.
+ * Guards against malformed/validation-error tool results whose details are an
+ * empty object (e.g. `{}` from a failed model call): those must never be
+ * treated as a valid todo state snapshot.
+ */
+export function isValidTodoDetails<T>(
+	details: unknown,
+): details is { action: string; todos: T[]; error?: string; nextId?: number } {
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		Array.isArray((details as { todos?: unknown }).todos)
+	);
+}
+
 export interface TodoWidgetTheme {
 	fg(color: string, text: string): string;
 	strikethrough(text: string): string;
