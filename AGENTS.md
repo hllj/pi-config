@@ -32,17 +32,19 @@ pi-config/                 (= ~/.pi/agent/extensions)
 ├── questionnaire.ts       root-level extension: `questionnaire` tool (multi-question tabs)
 ├── todo.ts                root-level extension: todo list tools (/todos)
 ├── trigger-compact.ts     root-level extension: /trigger-compact command
+├── verify-guard.ts         root-level extension: verification watchdog — at turn_end, if a turn changed files but ran no verification (run_test / lsp_diagnostics / lens_diagnostics / check command), send one advisory verify steer; persisted /verify-guard toggle (definition-of-done enforcement)
 ├── web-tools.ts           root-level extension: web_search / web_fetch tools
 │
 ├── background-tasks/      extension (index.ts): task_run/task_stop/task_remove/task_list/task_status/task_wait + interactive /tasks TUI
 ├── bash-tools/            extension (index.ts): file_sizes / run_test / capture_output (context-economical read-decision, targeted-verification, and spill-to-disk full-output tools); capture.ts is the shared spill-to-disk runner
+├── learning/              extension (index.ts): failure learning — captures tool/subagent failures, fingerprints + dedupes into failure-store.ts (pure, unit-tested), /learn + learn tool close the loop, session-notes bridge, skill drafting (remember → improve)
 ├── monitor/               extension (index.ts): monitor_* tools; own package.json + node_modules (ws dep)
 ├── plan-mode/             extension (index.ts): /plan, /plan-todos, Ctrl+Alt+P
 ├── subagent/              extension (index.ts): scout/planner/reviewer/worker/general + run store + workflow engine
 │   ├── agents/*.md        subagent definitions (YAML frontmatter: name/description/model/tools)
 │   ├── prompts/*.md       bundled workflows (/implement, /scout-and-plan, /implement-and-review)
 │   └── tests/             unit suites (run-unit.sh, run-widget.sh) + e2e-smoke.sh
-└── todo/                  TUI widget + tests imported by root todo.ts
+├── tests/                 root-level unit tests (dev-workflows, verify-guard)
 ```
 
 **Two extension shapes** are both valid (Pi auto-discovers both):
@@ -96,10 +98,12 @@ npm run setup            # (re)create type-checking symlinks into global pi  [sh
 npm run typecheck        # tsc --noEmit  (npm per-run setup first via pretypecheck)
 npm run lint             # eslint .  (flat config, pragmatic: real bugs/dead code, not strict-any gate)
 npm run lint:fix         # eslint . --fix  (autofix what's safe)
-npm test                 # all suites: test:subagent + test:subagent:widget + test:todo + test:notes
+npm test                 # all suites: test:subagent + test:subagent:widget + test:todo + test:dev-workflows + test:verify-guard + test:learning + test:notes
 npm run test:subagent    # bash subagent/tests/run-unit.sh
 npm run test:subagent:widget  # bash subagent/tests/run-widget.sh
 npm run test:todo        # node todo/todo-widget.test.ts
+npm run test:learning    # node learning/failure-store.test.ts
+npm run test:verify-guard # node tests/verify-guard.test.ts
 npm run test:notes       # node session-memory/lib.test.ts
 npm run check            # setup + lint + typecheck + test  (definition of done for pi-config)
 ```
