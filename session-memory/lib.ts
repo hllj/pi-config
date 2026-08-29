@@ -201,6 +201,30 @@ export function summarizeMessage(text: string, max = 90): string {
 	return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
+/**
+ * Progress one auto-refresh countdown step (pure). Returns whether a refresh
+ * should fire now (+ the next countdown value, reset to `every` on fire).
+ * `pending <= 1` fires; a fresh cadence starts at `pending === every`.
+ */
+export function autoRefreshStep(
+	pending: number,
+	every: number,
+): { fire: boolean; pending: number } {
+	if (pending <= 1) return { fire: true, pending: every };
+	return { fire: false, pending: pending - 1 };
+}
+
+/**
+ * True when an assistant text contains genuine content worth auto-logging —
+ * trims to a non-empty, non-trivial summary. Pure predicate over the message.
+ */
+export function isAutoLoggable(text: string): boolean {
+	const s = summarizeMessage(text);
+	return (
+		s.length > 0 && !/^(?:done|ok|okay|fine|thanks|works|\d+)[.!]?$/i.test(s)
+	);
+}
+
 /** Replace the body of section `id` with `content` (creating the section if absent). */
 export function setSection(md: string, id: string, content: string): string {
 	const heading = SECTION_HEADINGS[id];

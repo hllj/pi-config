@@ -1,28 +1,33 @@
 /**
  * Session Notes / Memory extension
  *
- * Keeps a living, structured markdown notes file for the current conversation —
- * the way a human keeps working notes while coding — with these sections:
+ * Keeps a living, structured markdown notes file for the CURRENT session — the
+ * way a human keeps working notes while coding — with these sections:
  *
  *   Session Title, Current State, Task specification, Files and Functions,
  *   Workflow, Errors & Corrections, Codebase and System Documentation,
  *   Learnings, Key results, Worklog.
  *
- * Storage (per working directory, survives restarts and /reload):
- *   ~/.pi/agent/memory/<cwd-slug>/CURRENT.md             active notes
- *   ~/.pi/agent/memory/<cwd-slug>/archives/<topic>.md    snapshots on archive/new
+ * Storage is PER-SESSION (not per-directory): each pi session has its own
+ * working memory file, keyed by the session UUID. Resuming the same session
+ * (pi -c, /resume) keeps its memory; a brand-new session starts fresh.
+ *   ~/.pi/agent/memory/<session-id>/CURRENT.md        active notes
+ *
+ * Who writes it:
+ *   - The pi coding agent updates it automatically (see "Auto-update").
+ *   - The user views/edits it directly via `/notes edit`.
+ * There is deliberately NO archive / new / seed lifecycle — the file is just
+ * the working memory of the current session.
  *
  * Surfacing:
- *   - `note` tool (LLM): read / note / write / set_title / archive
- *   - `/notes` command (user): status / edit / new / edit / seed
+ *   - `note` tool (LLM): read / note / write / set_title
+ *   - `/notes` command (user): status / edit / auto-log / auto-refresh
  *   - Auto-seed: on the first user turn of a session, if CURRENT.md exists for
- *     this cwd, a compact custom message (Title / Current State / Key results /
- *     Learnings / Errors) is injected into LLM context so a new session
- *     continues prior work.
+ *     this session, a compact custom message (Title / Current State / Key
+ *     results / Learnings / Errors) is injected into LLM context so a resumed
+ *     session continues prior work.
  *   - TUI widget: a condensed Current State + recent Worklog is shown above the
  *     editor (like the todo list) whenever the notes have real content.
- *   - Auto-archive on compact: when a session is compacted, the current notes
- *     are snapshotted to archives/ (so they are never lost to summarization).
  *   - Session-close finalization: on quit/reload/new/resume/fork a timestamped
  *     worklog line marks the session boundary (so the notes track session ends).
  *   - Periodic auto-log: after each settled agent run, a one-line worklog entry
@@ -33,13 +38,7 @@
  *
  * Override the storage root with env PI_MEMORY_DIR.
  */
-import {
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	writeFileSync,
-	existsSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -50,6 +49,8 @@ import {
 	SECTION_HEADINGS,
 	SECTION_IDS,
 	appendSection,
+	isAutoLoggable,
+	autoRefreshStep,
 	buildNotesStatus,
 	buildNotesWidget,
 	condense,
@@ -71,94 +72,100 @@ function memoryRoot(): string {
 	return process.env.PI_MEMORY_DIR ?? join(homedir(), ".pi", "agent", "memory");
 }
 
-function cwdSlug(cwd: string): string {
-	const base = cwd.split("/").filter(Boolean).pop() || "root";
-	const h = createHash("sha1").update(cwd).digest("hex").slice(0, 8);
+/**
+ * The memory key identifying THIS session's working notes: the session UUID
+ * when one is available (persisted & in-memory sessions both carry an id).
+ * Falls back to a per-cwd slug only if no session id is present.
+ */
+function sessionKey(ctx: {
+	cwd: string;
+	sessionManager?: { getSessionId?(): string };
+}): string {
+	const id = ctx.sessionManager?.getSessionId?.();
+	if (id) return id;
+	const base = ctx.cwd.split("/").filter(Boolean).pop() || "root";
+	const h = createHash("sha1").update(ctx.cwd).digest("hex").slice(0, 8);
 	return `${base}-${h}`;
 }
 
-function memoryDir(cwd: string): string {
-	return join(memoryRoot(), cwdSlug(cwd));
+function memoryDir(key: string): string {
+	return join(memoryRoot(), key);
 }
 
-function currentPath(cwd: string): string {
-	return join(memoryDir(cwd), "CURRENT.md");
+function currentPath(key: string): string {
+	return join(memoryDir(key), "CURRENT.md");
 }
 
-function archiveDir(cwd: string): string {
-	return join(memoryDir(cwd), "archives");
+/**
+ * Absolute CURRENT.md path for THIS session (session key + memory root).
+ * Exported so the learning extension can mirror failures into the notes.
+ */
+export function sessionNotesPath(ctx: {
+	cwd: string;
+	sessionManager?: { getSessionId?(): string };
+}): string {
+	return currentPath(sessionKey(ctx));
 }
 
-function readCurrent(cwd: string): string | null {
-	const p = currentPath(cwd);
+/** Absolute CURRENT.md path for an explicit session id (index back-links). */
+export function notesPathForSession(sessionId: string): string {
+	return currentPath(sessionId);
+}
+
+function readCurrent(key: string): string | null {
+	const p = currentPath(key);
 	if (!existsSync(p)) return null;
 	return readFileSync(p, "utf8");
 }
 
-function writeCurrent(cwd: string, content: string): void {
-	mkdirSync(memoryDir(cwd), { recursive: true });
-	writeFileSync(currentPath(cwd), content, "utf8");
+function writeCurrent(key: string, content: string): void {
+	mkdirSync(memoryDir(key), { recursive: true });
+	writeFileSync(currentPath(key), content, "utf8");
 }
 
-function ensureCurrent(cwd: string, title?: string): string {
-	const existing = readCurrent(cwd);
+function ensureCurrent(key: string, title?: string): string {
+	const existing = readCurrent(key);
 	if (existing !== null) return existing;
 	const content = template(title);
-	writeCurrent(cwd, content);
+	writeCurrent(key, content);
 	return content;
 }
 
-/** Archive CURRENT.md to archives/<slug>.md (deduped), returning the file path. */
-function snapshotCurrent(cwd: string, topic?: string): string {
-	const md = ensureCurrent(cwd);
-	const dir = archiveDir(cwd);
-	mkdirSync(dir, { recursive: true });
-	const inferred = (md.split("\n").find((l) => l.startsWith("# ")) ?? "")
-		.slice(2)
-		.trim();
-	const base = topic?.trim().toLowerCase() || inferred || "untitled";
-	const safe =
-		base
-			.replace(/[^\w\- ]+/g, "")
-			.replace(/\s+/g, "-")
-			.slice(0, 60) || "untitled";
-	let final = join(dir, `${safe}.md`);
-	let i = 1;
-	while (existsSync(final)) {
-		final = join(dir, `${safe}-${i}.md`);
-		i++;
+/* ---------------- auto-memory state (persisted toggles) ---------------- */
+
+interface AutoMemoState {
+	autoLog?: boolean;
+	autoRefresh?: boolean;
+	refreshEvery?: number;
+	/** JSON parse guard: unknown fields are tolerated, not required. */
+	autoRefreshPending?: number;
+}
+
+const AUTO_MEMO_STATE_FILE = () => join(memoryRoot(), "auto-state.json");
+
+function readAutoState(): AutoMemoState {
+	try {
+		return JSON.parse(
+			readFileSync(AUTO_MEMO_STATE_FILE(), "utf8"),
+		) as AutoMemoState;
+	} catch {
+		return {};
 	}
-	writeFileSync(final, md, "utf8");
-	return final;
 }
 
-/** Archive CURRENT.md and start a fresh document (used by `/notes new` and the tool). */
-function archiveCurrent(cwd: string, topic?: string): string {
-	const md = ensureCurrent(cwd);
-	const inferred = (md.split("\n").find((l) => l.startsWith("# ")) ?? "")
-		.slice(2)
-		.trim();
-	const next =
-		topic?.trim() ||
-		(inferred && inferred !== "Untitled session" ? inferred : "session-notes");
-	const final = snapshotCurrent(cwd, next);
-	writeCurrent(cwd, template(next));
-	return final;
-}
-
-/** List archived notes filenames for a cwd. */
-function listArchives(cwd: string): string[] {
-	const dir = archiveDir(cwd);
-	if (!existsSync(dir)) return [];
-	return readdirSync(dir)
-		.filter((f) => f.endsWith(".md"))
-		.sort((a, b) => a.localeCompare(b));
+function writeAutoState(state: AutoMemoState): void {
+	try {
+		mkdirSync(memoryRoot(), { recursive: true });
+		writeFileSync(AUTO_MEMO_STATE_FILE(), JSON.stringify(state, null, 2), "utf8");
+	} catch {
+		/* unwritable — keep in-memory for this session */
+	}
 }
 
 /* ---------------- tool + command ---------------- */
 
 const MemoryParams = Type.Object({
-	action: StringEnum(["read", "note", "write", "set_title", "archive"] as const),
+	action: StringEnum(["read", "note", "write", "set_title"] as const),
 	section: Type.Optional(StringEnum(SECTION_IDS as [string, ...string[]])),
 	content: Type.Optional(
 		Type.String({ description: "Content to note or write to the given section" }),
@@ -178,16 +185,22 @@ const NOTE_PROMPT_GUIDELINES = [
 export default function (pi: ExtensionAPI) {
 	// Notes are maintained ONLY in the main session. Subagent children spawn
 	// `pi --mode json` with the same cwd and load this extension too; guard every
-	// hook so they don't seed/archive/auto-log from child processes (which would
-	// race the parent's read-modify-write of CURRENT.md).
+	// hook so they don't seed/auto-log from child processes (which would race the
+	// parent's read-modify-write of CURRENT.md).
 	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
 
 	// TUI widget: show condensed notes (Current State + recent Worklog) above the
 	// editor, mirrored in the footer. Uses a distinct key so it sits alongside
 	// todo/plan widgets. Rebuilt whenever notes change or the session restarts.
-	const refreshWidget = (ctx: { cwd: string; hasUI: boolean; ui: any }) => {
+	const refreshWidget = (ctx: {
+		cwd: string;
+		hasUI: boolean;
+		ui: any;
+		sessionManager?: { getSessionId?(): string };
+	}) => {
 		if (!ctx.hasUI) return;
-		const md = readCurrent(ctx.cwd);
+		const key = sessionKey(ctx);
+		const md = readCurrent(key);
 		// SAFETY: WidgetTheme only needs fg(color,text), which ctx.ui.theme (Theme)
 		// provides with the same shape as the todo widget theme.
 		const theme = ctx.ui.theme as unknown as WidgetTheme;
@@ -198,11 +211,11 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	// Auto-seed: inject a condensed brief into context on the first user turn of a
-	// session if notes exist for this cwd. Sent as a hidden custom message.
+	// session if notes exist for this session. Sent as a hidden custom message.
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (isSubagentChild) return; // never seed from subagent children
 		refreshWidget(ctx);
-		const md = readCurrent(ctx.cwd);
+		const md = readCurrent(sessionKey(ctx));
 		if (!md) return;
 		const brief = condense(md);
 		if (!brief) return;
@@ -225,11 +238,12 @@ export default function (pi: ExtensionAPI) {
 	// boundary, so the notes file reflects that the session ended. Sync write so
 	// it always lands even during shutdown.
 	pi.on("session_shutdown", (event, ctx) => {
-		const md = readCurrent(ctx.cwd);
+		if (isSubagentChild) return;
+		const key = sessionKey(ctx);
+		const md = readCurrent(key);
 		if (!md) return;
 		const line = worklogLine(new Date(), `session closed (${event.reason})`);
-		if (isSubagentChild) return;
-		writeCurrent(ctx.cwd, prependWorklog(md, line));
+		writeCurrent(key, prependWorklog(md, line));
 		refreshWidget(ctx);
 	});
 
@@ -238,15 +252,33 @@ export default function (pi: ExtensionAPI) {
 	// turn is logged exactly once; skips empty/trivial outputs. This keeps the
 	// notes updating on its own, not only when the model happens to call `note`.
 	let lastAutoLogKey: string | undefined;
-	let autoLogEnabled = true; // /notes auto-log
-	let autoRefreshEnabled = false; // /notes auto-refresh (opt-in LLM refresh)
-	let autoRefreshCountdown = 0;
-	const AUTO_REFRESH_EVERY = 5; // nudge the agent to refresh sections every N settled runs
+	// Auto-memory state, hydrated from the persisted state file so toggles and
+	// the refresh cadence survive session restarts. Auto-show both on by default:
+	// auto-log keeps a worklog line per settled run; auto-refresh nudges the agent
+	// to refresh all sections every `refreshEvery` settled runs (bounded).
+	const autoState = readAutoState();
+	const DEFAULT_REFRESH_EVERY = 5;
+	let autoLogEnabled = autoState.autoLog ?? true; // /notes auto-log
+	let autoRefreshEnabled = autoState.autoRefresh ?? true; // auto section refresh
+	let autoRefreshPending = autoState.autoRefreshPending ?? DEFAULT_REFRESH_EVERY;
+	let autoRefreshEvery = autoState.refreshEvery ?? DEFAULT_REFRESH_EVERY;
+	const persistAutoState = () =>
+		writeAutoState({
+			autoLog: autoLogEnabled,
+			autoRefresh: autoRefreshEnabled,
+			refreshEvery: autoRefreshEvery,
+			autoRefreshPending,
+		});
 
 	pi.on("agent_settled", (_event, ctx) => {
 		if (isSubagentChild) return; // never write notes from subagent children
-		const md = readCurrent(ctx.cwd);
-		if (!md) return;
+		const key = sessionKey(ctx);
+		// Self-bootstrap: if no notes exist yet, create them now so auto-memory
+		// always has a file to update — even when the model never calls `note`.
+		const md = ensureCurrent(
+			key,
+			ctx.sessionManager.getSessionName() ?? undefined,
+		);
 		const entries = ctx.sessionManager.getEntries();
 		// Find the newest assistant message.
 		let lastKey: string | undefined;
@@ -275,44 +307,35 @@ export default function (pi: ExtensionAPI) {
 			break;
 		}
 
+		let upgraded = false;
+
 		// Auto-log: one deterministic worklog line per settled run (on by default).
 		if (autoLogEnabled && lastKey && lastKey !== lastAutoLogKey) {
 			const summary = summarizeMessage(lastText);
-			if (summary) {
+			if (isAutoLoggable(summary)) {
 				lastAutoLogKey = lastKey;
-				writeCurrent(ctx.cwd, prependWorklog(md, worklogLine(new Date(), summary)));
-				refreshWidget(ctx);
+				writeCurrent(key, prependWorklog(md, worklogLine(new Date(), summary)));
+				upgraded = true;
 			}
 		}
 
-		// Auto-refresh (opt-in): every N settled runs, queue a follow-up that nudges
-		// the agent to refresh ALL sections via the note tool. Bounded by the
-		// countdown so the refresh turn itself cannot re-trigger immediately.
+		// Auto-refresh (on by default): every `autoRefreshEvery` settled runs,
+		// queue a follow-up that nudges the agent to refresh ALL sections via the
+		// note tool. Bounded by the countdown (persisted) so the refresh turn
+		// itself cannot re-trigger immediately.
 		if (autoRefreshEnabled) {
-			autoRefreshCountdown--;
-			if (autoRefreshCountdown <= 0) {
-				autoRefreshCountdown = AUTO_REFRESH_EVERY;
+			const step = autoRefreshStep(autoRefreshPending, autoRefreshEvery);
+			autoRefreshPending = step.pending;
+			if (step.fire) {
 				pi.sendUserMessage(
-					"Session maintenance: refresh the session notes with the note tool — update Current State, Files and Functions, Workflow, Learnings, Key results, and Errors & Corrections from the recent turns. Keep each concise.",
+					"Session maintenance: refresh the session notes with the note tool — update Current State, Files and Functions, Workflow, Learnings, Key results, and Errors & Corrections from the recent turns, and set the session title. Keep each concise.",
 					{ deliverAs: "followUp" },
 				);
+				upgraded = true;
 			}
 		}
-	});
-
-	// Auto-archive on compact: when the session is compacted (context summarized),
-	// snapshot the current notes so their content survives independently of the
-	// summarization. Skips when the notes are still just the empty template.
-	pi.on("session_compact", (_event, ctx) => {
-		if (isSubagentChild) return; // never archive from subagent children
-		const md = readCurrent(ctx.cwd);
-		if (!md) return;
-		if (condense(md) === null) return; // nothing real to preserve yet
-		const archived = snapshotCurrent(ctx.cwd, "compact");
-		ctx.ui.notify(
-			`Session compacted — session notes archived to ${archived}`,
-			"info",
-		);
+		persistAutoState();
+		if (upgraded) refreshWidget(ctx);
 	});
 
 	// Register the note tool the LLM can call to maintain notes.
@@ -320,7 +343,7 @@ export default function (pi: ExtensionAPI) {
 		name: "note",
 		label: "Session Notes",
 		description:
-			'Read or maintain a structured markdown memory of the current session. Actions: "read" (dump current notes), "note" (append a bullet note to a section), "write" (replace a whole section), "set_title" (set the session title), "archive" (snapshot current notes and start fresh). Sections: title, state, task, files, workflow, errors, codebase, learnings, results, worklog.',
+			'Read or maintain a structured markdown memory of the current session. Actions: "read" (dump current notes), "note" (append a bullet note to a section), "write" (replace a whole section), "set_title" (set the session title). Sections: title, state, task, files, workflow, errors, codebase, learnings, results, worklog.',
 		promptSnippet: NOTE_PROMPT_SNIPPET,
 		promptGuidelines: NOTE_PROMPT_GUIDELINES,
 		parameters: MemoryParams,
@@ -337,6 +360,7 @@ export default function (pi: ExtensionAPI) {
 					details: { ok: false, error: "subagent child" },
 				};
 			}
+			const key = sessionKey(ctx);
 			// Auto-title: adopt the pi session's display name as the notes title
 			// ("update the name by pi itself"), sourced live from the tool-call
 			// context. This keeps the `# Title` in sync with the session name so the
@@ -346,21 +370,21 @@ export default function (pi: ExtensionAPI) {
 			// "Untitled session" — a manual/previous explicit title is never
 			// clobbered.
 			const sessionName = ctx.sessionManager.getSessionName()?.trim() || undefined;
-			const existing = readCurrent(ctx.cwd);
+			const existing = readCurrent(key);
 			if (
 				existing !== null &&
 				sessionName &&
 				extractTitle(existing) === "Untitled session"
 			) {
-				writeCurrent(ctx.cwd, setTitle(existing, sessionName));
+				writeCurrent(key, setTitle(existing, sessionName));
 				refreshWidget(ctx);
 			}
 
 			switch (params.action) {
 				case "read": {
-					const md = readCurrent(ctx.cwd);
+					const md = readCurrent(key);
 					if (!md) {
-						writeCurrent(ctx.cwd, template(sessionName));
+						writeCurrent(key, template(sessionName));
 						refreshWidget(ctx);
 						return {
 							content: [
@@ -381,12 +405,8 @@ export default function (pi: ExtensionAPI) {
 					}
 					const section = params.section ?? "state";
 					writeCurrent(
-						ctx.cwd,
-						appendSection(
-							ensureCurrent(ctx.cwd, sessionName),
-							section,
-							params.content,
-						),
+						key,
+						appendSection(ensureCurrent(key, sessionName), section, params.content),
 					);
 					refreshWidget(ctx);
 					return {
@@ -406,8 +426,8 @@ export default function (pi: ExtensionAPI) {
 					}
 					const section = params.section ?? "state";
 					writeCurrent(
-						ctx.cwd,
-						setSection(ensureCurrent(ctx.cwd, sessionName), section, params.content),
+						key,
+						setSection(ensureCurrent(key, sessionName), section, params.content),
 					);
 					refreshWidget(ctx);
 					return {
@@ -418,25 +438,11 @@ export default function (pi: ExtensionAPI) {
 
 				case "set_title": {
 					const title = params.title?.trim() || sessionName || "Untitled session";
-					writeCurrent(ctx.cwd, setTitle(ensureCurrent(ctx.cwd, title), title));
+					writeCurrent(key, setTitle(ensureCurrent(key, title), title));
 					refreshWidget(ctx);
 					return {
 						content: [{ type: "text", text: `Title set: "${title}"` }],
 						details: { ok: true },
-					};
-				}
-
-				case "archive": {
-					const archived = archiveCurrent(ctx.cwd, params.title);
-					refreshWidget(ctx);
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Archived to ${archived}. Started a fresh document.`,
-							},
-						],
-						details: { ok: true, archived },
 					};
 				}
 
@@ -451,18 +457,18 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// /notes command: status / edit / new / seed.
+	// /notes command: status / edit (user edits the current working memory).
 	pi.registerCommand("notes", {
 		description:
-			"Session notes: default shows path, `edit` opens the file in the editor, `new <title>` archives + restarts, `seed` loads a past topic, `auto-log` toggles periodic worklog lines, `auto-refresh` toggles periodic LLM section refresh.",
+			"Session notes: default shows path, `edit` opens the file in the editor, `auto-log` toggles periodic worklog lines, `auto-refresh` toggles periodic LLM section refresh (`auto-refresh N` sets the cadence).",
 		handler: async (args, ctx) => {
 			const trimmed = (args ?? "").trim();
-			const space = trimmed.indexOf(" ");
-			const sub = (space === -1 ? trimmed : trimmed.slice(0, space)).toLowerCase();
+			const sub = trimmed.toLowerCase();
 
 			switch (sub) {
 				case "auto-log": {
 					autoLogEnabled = !autoLogEnabled;
+					persistAutoState();
 					ctx.ui.notify(
 						autoLogEnabled
 							? "Auto-log on: each settled run appends one worklog line."
@@ -473,71 +479,50 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				case "auto-refresh": {
-					autoRefreshEnabled = !autoRefreshEnabled;
+					const everyArg = Number.parseInt(
+						trimmed.replace(/^auto-refresh\s*/, ""),
+						10,
+					);
+					if (Number.isFinite(everyArg) && everyArg >= 2) {
+						// `/notes auto-refresh N` — set cadence and force it on.
+						autoRefreshEvery = everyArg;
+						autoRefreshEnabled = true;
+						autoRefreshPending = everyArg;
+					} else {
+						autoRefreshEnabled = !autoRefreshEnabled;
+					}
+					persistAutoState();
 					ctx.ui.notify(
 						autoRefreshEnabled
-							? "Auto-refresh on: every few runs the agent refreshes all notes sections."
-							: "Auto-refresh off: notes update only via note tool / auto-log / manual edit.",
+							? `Auto-refresh on: every ${autoRefreshEvery} runs the agent refreshes all notes sections.`
+							: "Auto-refresh off: notes update via note tool / auto-log / manual edit.",
 						autoRefreshEnabled ? "info" : "warning",
 					);
 					return;
 				}
 
 				case "edit": {
-					const current = ensureCurrent(ctx.cwd);
+					const key = sessionKey(ctx);
+					const current = ensureCurrent(key);
 					if (!ctx.hasUI) {
-						ctx.ui.notify(`Notes at ${currentPath(ctx.cwd)}`, "info");
+						ctx.ui.notify(`Notes at ${currentPath(key)}`, "info");
 						return;
 					}
 					const edited = await ctx.ui.editor("Edit session notes", current);
 					if (edited !== undefined) {
-						writeCurrent(ctx.cwd, edited);
+						writeCurrent(key, edited);
 						refreshWidget(ctx);
 						ctx.ui.notify("Session notes updated.", "info");
 					}
 					return;
 				}
 
-				case "new": {
-					const title = space === -1 ? undefined : trimmed.slice(space + 1).trim();
-					const archived = archiveCurrent(ctx.cwd, title);
-					refreshWidget(ctx);
-					ctx.ui.notify(`Archived to ${archived}. Fresh notes started.`, "info");
-					return;
-				}
-
-				case "seed": {
-					const files = listArchives(ctx.cwd);
-					if (files.length === 0) {
-						ctx.ui.notify(
-							"No archived topics to seed yet. Use `/notes new` when finishing a topic.",
-							"warning",
-						);
-						return;
-					}
-					const choice = await ctx.ui.select(
-						"Pick a past topic to load into context:",
-						files,
-					);
-					if (!choice) return;
-					const content = readFileSync(join(archiveDir(ctx.cwd), choice), "utf8");
-					// Restore the archived topic as the working document. The next user
-					// turn auto-seeds the condensed brief into context.
-					writeCurrent(ctx.cwd, content);
-					refreshWidget(ctx);
-					ctx.ui.notify(
-						`Loaded "${choice}" as the working document; it will be seeded into context on your next message.`,
-						"info",
-					);
-					return;
-				}
-
 				default: {
-					const md = readCurrent(ctx.cwd);
+					const md = readCurrent(sessionKey(ctx));
 					ctx.ui.notify(
 						md === null
-							? `No session notes yet at ${currentPath(ctx.cwd)}. Create with /notes edit.`
-							: `Session notes: ${currentPath(ctx.cwd)} (${md.length} chars). /notes edit | new | seed | auto-log | auto-refresh`,
+							? `No session notes yet at ${currentPath(sessionKey(ctx))}. Auto-memory will create them on the next settled run. /notes edit | auto-log | auto-refresh`
+							: `Session notes: ${currentPath(sessionKey(ctx))} (${md.length} chars). auto-log ${autoLogEnabled ? "on" : "off"} · auto-refresh ${autoRefreshEnabled ? `on every ${autoRefreshEvery}` : "off"}. /notes edit | auto-log | auto-refresh`,
 						"info",
 					);
 					return;

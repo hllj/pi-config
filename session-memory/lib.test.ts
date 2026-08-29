@@ -10,6 +10,8 @@ import {
 	extractTitle,
 	lastWorklogLines,
 	prependWorklog,
+	isAutoLoggable,
+	autoRefreshStep,
 	setSection,
 	setTitle,
 	stripGuides,
@@ -182,6 +184,40 @@ assertEqualStrict(
 	`${("x").repeat(19)}…`,
 );
 assertEqualStrict("summarizeMessage empty", summarizeMessage("   "), "");
+
+// --- auto refresh countdown (pure) ---
+assertEqualStrict("autoRefreshStep fires at 1", autoRefreshStep(1, 5), {
+	fire: true,
+	pending: 5,
+});
+assertEqualStrict("autoRefreshStep decrements above 1", autoRefreshStep(3, 5), {
+	fire: false,
+	pending: 2,
+});
+assertEqualStrict(
+	"autoRefreshStep resets cadence on fire",
+	autoRefreshStep(1, 3),
+	{ fire: true, pending: 3 },
+);
+
+// --- isAutoLoggable ---
+assertEqualStrict(
+	"isAutoLoggable true on real text",
+	isAutoLoggable("fixed the bug"),
+	true,
+);
+assertEqualStrict(
+	"isAutoLoggable false on trivial",
+	isAutoLoggable("Done."),
+	false,
+);
+assertEqualStrict("isAutoLoggable false on empty", isAutoLoggable(""), false);
+assertEqualStrict(
+	"isAutoLoggable false on whitespace",
+	isAutoLoggable("   "),
+	false,
+);
+assertEqualStrict("isAutoLoggable false on ok", isAutoLoggable("OK"), false);
 
 // --- worklog gets a timestamped line ---
 assertContains("worklog auto-log line present", noted2, "auto-log update");
