@@ -5,6 +5,23 @@
  * loads the extension.
  */
 
+/**
+ * Immutable deep copy of a todo list for result snapshots.
+ *
+ * Each tool result's `details.todos` must be an independent copy. Tool calls in
+ * one assistant message run in PARALLEL and pi serializes all their results
+ * after the batch settles — a shallow copy (`[...todos]`) would leave every
+ * snapshot sharing the same Todo object references, so by serialization time
+ * all results would report the same final mutated state instead of the state at
+ * each call's return. (Affects transcript display; reconstruction keeps only
+ * the last snapshot, so it is unaffected.)
+ */
+export function snapshotTodos<
+	T extends { id: number; text: string; done: boolean },
+>(todos: T[]): T[] {
+	return todos.map((t) => ({ ...t }));
+}
+
 /** Max todo items rendered in the widget above the editor. */
 export const MAX_TODO_WIDGET_ITEMS = 5;
 

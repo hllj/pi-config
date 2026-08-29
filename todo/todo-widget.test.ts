@@ -6,6 +6,7 @@ import {
 	buildTodoListWidget,
 	buildTodoStatus,
 	isValidTodoDetails,
+	snapshotTodos,
 	type TodoWidgetTheme,
 } from "./todo-widget.ts";
 
@@ -185,6 +186,28 @@ check(
 		todos: [{ id: 1, text: "x", done: false }],
 	}),
 	true,
+);
+
+// ---- snapshot independence (regression: parallel tool results must not
+// share Todo object references, or all results would serialize as the same
+// final mutated state instead of the state at each call's return) ----
+const live = [
+	{ id: 1, text: "A", done: false },
+	{ id: 2, text: "B", done: false },
+];
+const snap = snapshotTodos(
+	live as { id: number; text: string; done: boolean }[],
+);
+check("snapshot has same items", snap, live);
+check("snapshot is a new array", snap !== live, true);
+check("snapshot items are new objects", snap[0] !== live[0], true);
+check(
+	"mutating source does not leak into snapshot (deep copy)",
+	(() => {
+		live[0].done = true;
+		return snap[0].done;
+	})(),
+	false,
 );
 
 if (failed > 0) {

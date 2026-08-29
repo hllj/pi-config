@@ -22,6 +22,7 @@ import {
 	buildTodoListWidget,
 	buildTodoStatus,
 	isValidTodoDetails,
+	snapshotTodos,
 	type TodoWidgetTheme,
 } from "./todo/todo-widget.ts";
 import { getTaskStatus } from "./background-tasks/store.ts";
@@ -252,7 +253,11 @@ export default function (pi: ExtensionAPI) {
 									: "No todos",
 							},
 						],
-						details: { action: "list", todos: [...todos], nextId } as TodoDetails,
+						details: {
+							action: "list",
+							todos: snapshotTodos(todos),
+							nextId,
+						} as TodoDetails,
 					};
 
 				case "add": {
@@ -261,7 +266,7 @@ export default function (pi: ExtensionAPI) {
 							content: [{ type: "text", text: "Error: text required for add" }],
 							details: {
 								action: "add",
-								todos: [...todos],
+								todos: snapshotTodos(todos),
 								nextId,
 								error: "text required",
 							} as TodoDetails,
@@ -279,7 +284,11 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{ type: "text", text: `Added todo #${newTodo.id}: ${newTodo.text}` },
 						],
-						details: { action: "add", todos: [...todos], nextId } as TodoDetails,
+						details: {
+							action: "add",
+							todos: snapshotTodos(todos),
+							nextId,
+						} as TodoDetails,
 					};
 				}
 
@@ -289,7 +298,7 @@ export default function (pi: ExtensionAPI) {
 							content: [{ type: "text", text: "Error: id required for toggle" }],
 							details: {
 								action: "toggle",
-								todos: [...todos],
+								todos: snapshotTodos(todos),
 								nextId,
 								error: "id required",
 							} as TodoDetails,
@@ -301,7 +310,7 @@ export default function (pi: ExtensionAPI) {
 							content: [{ type: "text", text: `Todo #${params.id} not found` }],
 							details: {
 								action: "toggle",
-								todos: [...todos],
+								todos: snapshotTodos(todos),
 								nextId,
 								error: `#${params.id} not found`,
 							} as TodoDetails,
@@ -316,7 +325,11 @@ export default function (pi: ExtensionAPI) {
 								text: `Todo #${todo.id} ${todo.done ? "completed" : "uncompleted"}`,
 							},
 						],
-						details: { action: "toggle", todos: [...todos], nextId } as TodoDetails,
+						details: {
+							action: "toggle",
+							todos: snapshotTodos(todos),
+							nextId,
+						} as TodoDetails,
 					};
 				}
 
@@ -336,7 +349,7 @@ export default function (pi: ExtensionAPI) {
 						content: [{ type: "text", text: `Unknown action: ${params.action}` }],
 						details: {
 							action: "list",
-							todos: [...todos],
+							todos: snapshotTodos(todos),
 							nextId,
 							error: `unknown action: ${params.action}`,
 						} as TodoDetails,
