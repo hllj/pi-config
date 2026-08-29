@@ -7,9 +7,16 @@
  * persistence, TUI widget, and resume machinery.
  *
  * - `run_dev_workflow` tool — the LLM calls this once to launch a whole
- *   pipeline (instead of hand-assembling a multi-step chain).
+ *   pipeline (instead of hand-assembling a multi-step chain). It owns the
+ *   type/topic decision: the tool guidance teaches the model how to pick
+ *   `type` from task shape and `topic` as an imperative phrase.
  * - `/dev <type> <topic>` command — for humans; expands to an agent prompt
  *   that invokes the tool, so the workflow streams normally in the transcript.
+ * - `/dev-auto` — persisted toggle for EVENT-DRIVEN workflow nudges (no
+ *   keyword detection): a failing `run_dev_workflow` earns a recovery nudge,
+ *   and a tool error that matches a known recurring failure in the
+ *   failure-learning store earns a data-driven nudge to consider
+ *   `run_dev_workflow`. The model always decides type/topic itself.
  *
  * Examples:
  *   /dev swat add Redis caching to the session store
@@ -26,6 +33,10 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { repeatWorkflowHint } from "./learning/index.ts";
 import {
 	discoverAgents,
 	type AgentConfig,
@@ -255,49 +266,16 @@ export const DevWorkflowTemplates: Record<DevWorkflowType, WorkflowTemplate> =
 	WORKFLOWS;
 
 /**
- * Map a user prompt to a dev-workflow type when the intent is strong and
- * unambiguous, or null otherwise. Ranked: the most specific intent wins.
- * Exported for unit testing.
+ * `run_dev_workflow` tool guidance: how the model should pick `type` + `topic`
+ * from its current task. Shared by the tool's `promptGuidelines` so the choice
+ * is model-owned (no keyword/regex detection anywhere).
  */
-export function detectWorkflow(prompt: string): DevWorkflowType | null {
-	const p = prompt.toLowerCase();
-	// Bail on meta-prompting / already-workflowed messages.
-	if (
-		p.startsWith("/") ||
-		p.includes("run_dev_workflow") ||
-		p.includes("/dev ") ||
-		p.trim().length < 12 ||
-		/^(what|how|why|is|are|can|do|does|list|show|explain|tell)/.test(p)
-	) {
-		return null;
-	}
-	// Ranked: most specific intent wins.
-	if (
-		/\b(refactor|restructure|split|merge|rename|extract|reorgani[sz]e|migrat)\b/.test(
-			p,
-		)
-	) {
-		return "refactor";
-	}
-	if (
-		/\b(fix\b|bug|bugfix|flaky|broken|crash|error|failing|fail\b|failure|race condition|segfault|exception|hang\b)/.test(
-			p,
-		)
-	) {
-		return "bugfix";
-	}
-	if (
-		/\b(add|implement|build|create|feature|support|introduce|set up|wire up)\b/.test(
-			p,
-		)
-	) {
-		return "swat";
-	}
-	if (/\b(understand|explore|map|learn|onboard|discover)\b/.test(p)) {
-		return "explore";
-	}
-	return null;
-}
+const TYPE_GUIDANCE = [
+	"Use this for a task that matches a whole pipeline — one call instead of hand-assembling a chain of subagent steps.",
+	"Pick type by task shape (you decide, not a keyword rule): swat = ship new behavior (scout → planner → worker TDD → verify → reviewer → worker); bugfix = a bug/failure to reproduce+fix (scout → failing test → fix → review); refactor = restructure working code (planner blast-radius → worker → reviewer → lens full scan); explore = map/understand an unfamiliar area (parallel recon → synthesis).",
+	'Pick topic as the imperative task description the pipeline runs on — e.g. "add Redis caching to the session store" (swat) or "the auth token refresh race" (bugfix).',
+	"If a subagent result, a failing test, or your own iteration suggests a whole pipeline would serve better than inline work, prefer run_dev_workflow.",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Shared executor (reuses subagent's engine)
@@ -446,11 +424,7 @@ export default function (pi: ExtensionAPI) {
 			"Run a preset development workflow (scout → planner → worker with verification/review gates) in one call. Reuses the subagent workflow engine. Pick a type and topic; the appropriate agents run in sequence.",
 		promptSnippet:
 			"run_dev_workflow: launch a preset multi-agent pipeline (swat/bugfix/refactor/explore) with one call",
-		promptGuidelines: [
-			"For multi-step tasks preferring a full pipeline, call run_dev_workflow ONCE with a type + topic rather than hand-assembling a chain of subagent steps.",
-			"Types: swat (full feature: scout→planner→worker TDD→verify→reviewer→worker), bugfix (debug: scout→worker RED→worker GREEN→reviewer), refactor (deep refactor with lens full scan), explore (parallel recon + synthesis).",
-			"Prefer run_dev_workflow over a bare subagent chain whenever the task matches one of these pipelines.",
-		],
+		promptGuidelines: [...TYPE_GUIDANCE],
 		parameters: Type.Object({
 			type: StringEnum(["swat", "bugfix", "refactor", "explore"] as const, {
 				description:
@@ -654,39 +628,137 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ---------------------------------- B: auto-trigger -----------------
-	// Detect strong dev-workflow intent in a user's prompt and steer the model
-	// to run_dev_workflow WITHOUT replacing the user's message (non-invasive
-	// `transform`). Off by default; toggle with /dev-auto.
-	let devAutoEnabled = false;
+	// ---------------------------------- C: event-driven nudges ----------------
+	// No keyword detection. Two measured signals:
+	//   1. a `run_dev_workflow` run fails → recovery nudge (get_workflow/resume).
+	//   2. a tool error whose fingerprint already recurs in the failure-learning
+	//      store (>= threshold sessions, non-terminal) → data-driven nudge to
+	//      consider run_dev_workflow.
+	// In both cases the MODEL owns type/topic; the nudge only surfaces the option.
+	// Persisted toggle: /dev-auto. Subagent children never nudge (they race the
+	// parent and would duplicate every message).
+	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
+	const nudgeStateFile = () =>
+		join(homedir(), ".pi", "agent", "dev-workflows", "nudge-state.json");
+	const readNudgeEnabled = (): boolean => {
+		try {
+			return JSON.parse(readFileSync(nudgeStateFile(), "utf8")).enabled === true;
+		} catch {
+			return false;
+		}
+	};
+	let devNudgeEnabled = readNudgeEnabled();
+	// One-time context hint: on the first agent turn of a session with nudges
+	// enabled, inject a custom message explaining the persisted state so the
+	// model knows steers are event-driven and advisory (model owns type/topic).
+	let nudgeStateHinted = false;
+	const writeNudgeEnabled = (enabled: boolean) => {
+		try {
+			mkdirSync(dirname(nudgeStateFile()), { recursive: true });
+			writeFileSync(
+				nudgeStateFile(),
+				JSON.stringify({ enabled }, null, 2),
+				"utf8",
+			);
+		} catch {
+			/* state file unwritable — keep in-memory toggle for this session */
+		}
+	};
 
 	pi.registerCommand("dev-auto", {
-		description: "Toggle auto-triggering run_dev_workflow from task intent",
+		description:
+			"Toggle event-driven workflow nudges (persisted): when a dev workflow run fails or a tool error matches a known recurring failure in the failure-learning store, the agent is steered to consider run_dev_workflow. Type/topic are chosen by the model, not a keyword heuristic.",
 		handler: async (_args, ctx) => {
-			devAutoEnabled = !devAutoEnabled;
+			devNudgeEnabled = !devNudgeEnabled;
+			writeNudgeEnabled(devNudgeEnabled);
+			// Re-enabling re-arms the one-time context hint so the model is told
+			// about the persisted state again.
+			if (devNudgeEnabled) nudgeStateHinted = false;
 			ctx.ui.notify(
-				devAutoEnabled
-					? "Auto dev-workflow enabled: strong dev intent will steer to run_dev_workflow."
-					: "Auto dev-workflow disabled.",
-				devAutoEnabled ? "info" : "warning",
+				devNudgeEnabled
+					? "Auto dev-workflow nudges enabled: recurring failures / failed workflow runs will steer to run_dev_workflow."
+					: "Auto dev-workflow nudges disabled.",
+				devNudgeEnabled ? "info" : "warning",
 			);
 		},
 	});
 
-	/** Strong-intent detection lives at module scope (exported for tests); the
-	 * input hook below only uses it. */
-	pi.on("input", async (event) => {
-		if (!devAutoEnabled) return;
-		if (event.source !== "interactive") return; // only user-typed prompts
-
-		const type = detectWorkflow(event.text);
-		if (!type) return;
-
-		const hint =
-			`\n\n(Auto-steer) This looks like a ${type} task. ` +
-			`Consider running it as a preset pipeline: call the run_dev_workflow tool ` +
-			`with type="${type}" and topic="${event.text.trim()}". ` +
-			`(Disable with /dev-auto if unwanted.)`;
-		return { action: "transform", text: event.text + hint };
+	// Injected once per session (first agent turn while nudges are enabled): a
+	// custom message that explains the persisted /dev-auto state to the model
+	// before any nudge arrives, so steers read as advisory, event-driven hints.
+	// Custom messages render in the transcript when a renderer is registered;
+	// without one they still appear as plain entries carrying the details.
+	pi.on("before_agent_start", () => {
+		if (isSubagentChild || !devNudgeEnabled || nudgeStateHinted) return;
+		nudgeStateHinted = true;
+		return {
+			message: {
+				customType: "dev-workflow-nudge-state",
+				content:
+					"Auto dev-workflow nudges are ON (persisted in ~/.pi/agent/dev-workflows/nudge-state.json). " +
+					"You may see steer messages suggesting run_dev_workflow when a dev workflow run fails or " +
+					"a tool error matches a repeat candidate in the failure-learning store. " +
+					"They are advisory — you own the type/topic decision: pick the workflow type that fits, " +
+					"or ignore it if a pipeline doesn't help. Disable with /dev-auto.",
+				display: true,
+				details: { stateFile: nudgeStateFile() },
+			},
+		};
 	});
+
+	// Dedupe: at most one nudge per turn; per fingerprint max once per session.
+	const nudgedFingerprints = new Set<string>();
+	let nudgedThisTurn = false;
+	pi.on("turn_end", () => {
+		nudgedThisTurn = false;
+	});
+
+	pi.on("tool_execution_end", (event) => {
+		if (isSubagentChild || !devNudgeEnabled || !event.isError) return;
+
+		// Signal 1: the workflow run itself failed → recovery nudge.
+		if (event.toolName === "run_dev_workflow") {
+			if (nudgedThisTurn) return;
+			nudgedThisTurn = true;
+			pi.sendUserMessage(
+				"Your dev workflow run just failed. Inspect which step failed with `get_workflow`, resume from it with `resume_workflow`, or relaunch with a more focused topic.",
+				{ deliverAs: "steer" },
+			);
+			return;
+		}
+
+		// Signal 2: a tool error matching a known recurring failure pattern
+		// (fingerprint exists in the failure-learning store as a repeat).
+		// subagent/run_workflow broker calls SUCCEED even when children fail —
+		// those are ingested from the run store by the learning extension, so
+		// skip them here to avoid double-signaling.
+		if (event.toolName === "subagent" || event.toolName === "run_workflow")
+			return;
+
+		const message =
+			typeof event.result === "string"
+				? event.result
+				: typeof event.result === "object" && event.result !== null
+					? JSON.stringify(event.result)
+					: String(event.result ?? "tool failed");
+		const hint = repeatWorkflowHint("tool", event.toolName, message);
+		if (!hint.repeats || hint.workflow === null) return;
+		if (nudgedFingerprints.has(marker(event.toolName, message))) return;
+		if (nudgedThisTurn) return;
+
+		nudgedFingerprints.add(marker(event.toolName, message));
+		nudgedThisTurn = true;
+		pi.sendUserMessage(
+			`Heads-up: "${event.toolName}" just failed with an error you've hit before ` +
+				`(a repeat candidate in the failure-learning store). This is often a sign the task is ` +
+				`bigger than inline iteration — consider running it as a \`${hint.workflow}\` dev workflow: ` +
+				`call run_dev_workflow with type="${hint.workflow}" and topic describing the current task. ` +
+				`You decide whether it fits; disable these nudges with /dev-auto.`,
+			{ deliverAs: "steer" },
+		);
+	});
+
+	function marker(toolName: string, message: string): string {
+		return `${toolName}:${message}`;
+	}
 }

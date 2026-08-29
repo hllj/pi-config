@@ -55,6 +55,14 @@ are separate required parameters. The `/dev` command does the splitting for huma
 - The final output is the last completed step's output; use `expect` contracts (planner emits `{plan, files, risks}` JSON) to gate downstream steps.
 - Review every changed file (the `verify`/`reviewer` steps do this, but confirm `lsp_diagnostics` is clean on return).
 
+## Automatic nudges (`/dev-auto`)
+
+By default the model decides on its own when to use a workflow. `/dev-auto` enables
+**event-driven nudges** (persisted): when a dev workflow run fails, or a tool errors with a
+pattern the failure-learning store already recognizes as a repeat, the agent is steered to
+consider `run_dev_workflow` — but it still owns the type/topic decision. Advisory;
+a recurring failure usually means the task is bigger than inline iteration.
+
 ## Customizing
 
 The four pipelines are defined once in `pi-config/dev-workflows.ts` (`WORKFLOWS`).

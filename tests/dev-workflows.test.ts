@@ -7,7 +7,7 @@
 // These validate the pure template-building logic (agent sequences, {topic}
 // substitution, expect contracts) without spawning any subagent processes.
 
-import { DevWorkflowTemplates, detectWorkflow } from "../dev-workflows.ts";
+import { DevWorkflowTemplates } from "../dev-workflows.ts";
 
 let passed = 0;
 let failed = 0;
@@ -142,41 +142,9 @@ for (const typ of TYPES) {
 	);
 }
 
-// 7. Auto-workflow intent detection.
-const wf = (
-	input: string,
-	expectType: DevWorkflowType | null,
-	name: string,
-) => {
-	const got = detectWorkflow(input);
-	if (got === expectType) ok(`${name}: "${input}"`);
-	else fail(`${name}: "${input}"`, `expected ${expectType}, got ${got}`);
-};
-
-wf("refactor the workflow engine into smaller modules", "refactor", "refactor");
-wf("split the auth module into separate files", "refactor", "refactor split");
-wf("rename session-store to run-store", "refactor", "refactor rename");
-wf("fix the auth token refresh race condition", "bugfix", "bugfix race");
-wf("the flaky test keeps failing on CI", "bugfix", "bugfix flaky");
-wf("add Redis caching to the session store", "swat", "swat add");
-wf("implement input validation for the API", "swat", "swat implement");
-wf("build a new tool for parsing config files", "swat", "swat build");
-wf("map how tool dispatch works in this repo", "explore", "explore map");
-wf(
-	"understand the session-store persistence layer",
-	"explore",
-	"explore understand",
-);
-
-// Weak / meta prompts must not trigger.
-wf("what is the best way to cache data", null, "meta what");
-wf("how does the router work", null, "meta how");
-wf("hi", null, "too short");
-wf(
-	"call run_dev_workflow with swat for this feature",
-	null,
-	"already workflowed",
-);
+// 7. Auto-workflow intent detection was REMOVED (keyword/regex heuristic is
+// brittle on natural language; the model now owns the type/topic decision via
+// the tool's TYPE_GUIDANCE). No detectWorkflow tests remain by design.
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
