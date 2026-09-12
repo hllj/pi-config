@@ -96,6 +96,18 @@ When omitted, the subagent inherits the dispatching session's active model and t
 | `/scout-and-plan <query>` | scout → planner | Understand codebase before deciding on changes |
 | `/implement-and-review <query>` | worker → reviewer → worker | worker implements **test-first (TDD)** → reviewer checks → worker fixes issues |
 
+## Proactive triggering
+
+`subagent`, `run_workflow`, and `list_agents` carry `promptSnippet` (so they appear in the
+default system prompt's "Available tools" summary — custom tools without one are omitted
+from it entirely) and `subagent`/`run_workflow` carry `promptGuidelines` (delegate/don't-delegate
+heuristics appended to the system prompt's Guidelines section whenever this extension is
+loaded). This is what makes the model reach for a subagent on its own — without it, the only
+"when to delegate" guidance lived in `skills/subagents/SKILL.md`, and per Pi's own skill docs
+models don't reliably self-load full skill content ("models don't always do this; use
+prompting or `/skill:name` to force it" — see `pi`'s `docs/skills.md`). Keep both fields in
+sync with the `subagents` skill's "Decide: delegate or not?" section if that guidance changes.
+
 ## Usage
 
 ### Single agent

@@ -1828,6 +1828,7 @@ export default function (pi: ExtensionAPI) {
 		label: "List Agents",
 		description:
 			"List available subagents (name, description, tools, model) with optional filtering by scope and name pattern. Run this to discover which agent to dispatch before calling subagent.",
+		promptSnippet: "List available subagents (scout/planner/worker/reviewer/general) before dispatching one",
 		parameters: Type.Object({
 			scope: Type.Optional(AgentScopeSchema),
 			namePattern: Type.Optional(
@@ -2346,6 +2347,10 @@ export default function (pi: ExtensionAPI) {
 		label: "Run Workflow",
 		description:
 			"Execute a multi-step workflow with conditions, error handling, approval gates, parallel groups, per-step timeout, and per-step persistence (resumable via resume_workflow).",
+		promptSnippet: "Run a multi-step subagent pipeline (e.g. scout -> planner -> worker -> reviewer) with gates and resume",
+		promptGuidelines: [
+			"Prefer run_workflow over hand-chaining subagent calls when a task has distinct phases with clear handoffs (investigate -> plan -> implement -> review) — it gives you conditions, retries, approval gates, and resume-after-crash for free.",
+		],
 		parameters: Type.Object({
 			steps: Type.Array(WorkflowStepSchema, {
 				description: "Workflow steps to execute",
@@ -3279,6 +3284,12 @@ export default function (pi: ExtensionAPI) {
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
+		promptSnippet: "Delegate research, implementation, or review to an isolated subagent with its own context window",
+		promptGuidelines: [
+			"Reach for subagent (don't just default to bash/edit in the main context) when: you'd need to read/grep/explore ~10+ files whose contents you won't need again once you have the answer; the work splits into ~3+ independent pieces (different files/subsystems, multiple failing tests) that can run in parallel; or you're about to declare something done and want an unbiased second opinion — dispatch reviewer on the diff instead of grading your own work.",
+			"Don't dispatch a subagent for: a task doable in one bash command or a quick focused read; a tightly sequential chain where each step needs the full prior context (keep that in this conversation); or edits to the same file another in-flight change touches (same-file parallel edits conflict).",
+			"Call list_agents first if unsure which role fits; pick scout (recon), planner (plan, no edits), worker (TDD implementation), reviewer (independent review/second opinion), or general (fallback).",
+		],
 		parameters: SubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
