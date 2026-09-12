@@ -6,9 +6,13 @@ Personal extension pack for the [Pi coding agent](https://github.com/earendil-wo
 
 > **Security note:** extensions run with full system permissions and can execute arbitrary code. Only load code you trust — treat this repo the way you'd treat anything else that runs unsandboxed on every session.
 
-## Install
+## Setup
 
 Requirements: `pi` installed and on `PATH`, Node ≥ 22 (the test runners use Node's built-in TypeScript type-stripping).
+
+Two independent pieces make up a full personal Pi setup: this repo (the extensions) and a global operating manual (`AGENTS.md`). Neither alone is the full picture — extensions add capability, `AGENTS.md` tells the agent when and how to use it.
+
+### 1. Extensions — symlink this repo into place
 
 ```bash
 ln -s /path/to/pi-config ~/.pi/agent/extensions
@@ -18,6 +22,18 @@ npm run setup      # symlinks node_modules -> the global pi install, for type-ch
 ```
 
 Changes take effect after `/reload` inside a running `pi` session.
+
+### 2. Global operating manual (`~/.pi/agent/AGENTS.md`)
+
+`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo; my current copy is published as a [gist](https://gist.github.com/hllj/53666c537f54a6769157939d90cb7ceb) for reference.
+
+```bash
+mkdir -p ~/.pi/agent
+curl -fsSL https://gist.githubusercontent.com/hllj/53666c537f54a6769157939d90cb7ceb/raw/AGENTS.md \
+  -o ~/.pi/agent/AGENTS.md
+```
+
+Treat it as a starting point, not a drop-in — it names this repo's own agents and extensions directly (`subagent`, `verify-guard`, `watchdog`, `run_dev_workflow`, ...), so adapt the tool references if your extension set differs. Project-specific conventions (build/test commands, architecture, gotchas) belong in each project's own `AGENTS.md` instead of here — Pi layers them: global → parent directories → the current directory, all concatenated.
 
 ## What's here
 
@@ -126,4 +142,4 @@ After editing any extension, run `/reload` inside a live `pi` session to pick it
 
 ## Conventions
 
-`AGENTS.md` is the operating manual this repo follows when you — or an agent — work on it: extension shapes, type-pinning against the exact installed `pi` version, testing conventions, and the `npm run check` definition-of-done gate. Start there before making structural changes.
+This repo's own `AGENTS.md` (at the repo root — distinct from the global `~/.pi/agent/AGENTS.md` covered in Setup above) is the operating manual for working *on* this repo: extension shapes, type-pinning against the exact installed `pi` version, testing conventions, and the `npm run check` definition-of-done gate. Start there before making structural changes.
