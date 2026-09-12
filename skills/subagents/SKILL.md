@@ -5,8 +5,8 @@ description: >-
   agent to pick, how to write a task, and how to run single / parallel /
   chain / workflow modes with handoffs, structured outputs, and review gates.
   Use whenever delegating research, implementation, review, or parallelizable
-  work to the subagent tool (scout / planner / reviewer / worker / general),
-  or before hand-assembling a multi-agent run_workflow.
+  work to the subagent tool (scout / planner / reviewer / worker / general /
+  evidence-auditor), or before hand-assembling a multi-agent run_workflow.
 ---
 
 # Using Subagents Well
@@ -31,6 +31,7 @@ The harness ships these agents (see the live catalog with `list_agents`):
 | `worker` | deepseek-v4-flash | Test-first (TDD) implementation | Yes |
 | `reviewer` | glm-5.3 | Code review w/ `lsp_diagnostics` | No (read-only bash) |
 | `general` | session model | All-rounder fallback | Yes |
+| `evidence-auditor` | glm-5.3 | Audits one claim against sources — supported/contradicted/unclear/missing-evidence | No |
 
 ## 1. Decide: delegate or not?
 
@@ -74,6 +75,8 @@ of work**, or a **second opinion on correctness** → subagents are worth it.
 - Design an approach without touching code → **planner** (LM is stronger at architecture).
 - Implement a defined task with tests → **worker** (mandatory TDD; returns `## Test Evidence`).
 - Independent quality/security pass on a diff → **reviewer**.
+- Check one specific claim against its sources (not open-ended research) →
+  **evidence-auditor** — narrower than reviewer: one claim in, one verdict out.
 - Something that fits no specialized role (investigate + small fixes + docs +
   verify end-to-end) → **general**.
 - For project-local agents (`.pi/agents/*.md`), pass `agentScope: "both"` — it
@@ -171,6 +174,12 @@ The reviewer exists to see the *diff and the criteria*, not your reasoning.
 - Pass `worker`'s `## Test Evidence` so the reviewer checks the RED/GREEN claims,
   not just the diff.
 - Re-review after fixes; the reviewer subagent makes the loop cheap.
+- `reviewer` filters findings on evidence (repro / source-line contradiction /
+  contract violation), not vibes, and always ends with a `Merge verdict: BLOCK
+  | OK | OK with notes` line. Gate programmatically on that line (or via
+  `expect: { jsonSchema: { verdict, findings } }` if you need structured
+  output) instead of eyeballing severity labels — `BLOCK` means don't merge
+  until the Critical findings are addressed.
 
 ## 7. Sit on top of `run_dev_workflow` for whole pipelines
 

@@ -19,6 +19,7 @@ Delegate tasks to specialized subagents with isolated context windows.
 - **Workflow persistence**: per-step `appendEntry`; interrupted workflows can be inspected via `get_workflow` and resumed via `resume_workflow`
 - **Parallel workflow steps**: consecutive `parallelGroup` members run concurrently
 - **Persistent run store**: every dispatch is recorded to disk — a real pi session file per run (crash-safe, replayable via `pi --resume`) plus a queryable `record.json` — tracked via `/runs`, `list_subagent_sessions`, and `get_subagent_session`
+- **Watchdog** (opt-in, `/watchdog`): a live, in-session `reviewer` dispatch at natural boundaries (a mutating turn, or every few tool calls) that checks for correctness risk, test gaps, loop risk, scope drift, and unsafe changes — with stalemate detection so it doesn't nag about the same finding forever
 
 ## Structure
 
@@ -32,12 +33,14 @@ pi-config/subagent/          # Symlinked to ~/.pi/agent/extensions/subagent
 ├── workflow-renderer.ts      # Workflow TUI rendering
 ├── session-store.ts          # Persistent run store (record.json + child session files)
 ├── runs-screen.ts            # /runs TUI screen
+├── watchdog.ts                # Live in-session review: trigger/stalemate state machine (pure, unit-tested)
 ├── agents/                   # Agent definitions ★ NOW CO-LOCATED HERE
 │   ├── scout.md              # Fast codebase recon with pi-lens
 │   ├── planner.md            # Implementation plans with pi-lens
 │   ├── reviewer.md           # Code review with pi-lens diagnostics
 │   ├── worker.md             # Test-first (TDD) implementation with pi-lens verification
-│   └── general.md            # All-rounder fallback: investigate/plan/implement/verify end-to-end
+│   ├── general.md            # All-rounder fallback: investigate/plan/implement/verify end-to-end
+│   └── evidence-auditor.md   # Audits one claim against sources: supported/contradicted/unclear/missing-evidence
 ├── prompts/                  # Workflow prompts ★ NOW CO-LOCATED HERE
 │   ├── implement.md          # scout → planner → worker
 │   ├── scout-and-plan.md     # scout → planner (no implementation)
@@ -190,6 +193,31 @@ Every subagent dispatch is recorded durably on disk so runs can be audited and r
 - **Hydration**: on `session_start` the extension rebuilds the in-session run map from parent-session pointers, reconciles orphans (stale `running` records whose pid died → `orphaned`), and prunes old runs.
 - **Shutdown**: on `/quit`, live subagent processes are killed via a synchronous SIGTERM (+bounded ~200ms SIGKILL escalation) and their records marked `aborted`; `reload`/`new`/`resume`/`fork` leave children running.
 - **Retention**: `pruneStore` deletes runs older than 14 days (or `PI_SUBAGENT_RETENTION_DAYS`) and beyond 500 runs; live runs are never pruned.
+
+## Watchdog
+
+Opt-in (`/watchdog`, default off, persisted in `~/.pi/agent/watchdog/state.json`): a live,
+in-session second opinion instead of only a post-hoc review.
+
+- **Triggers**: a boundary trigger fires immediately after a turn that mutated the repo
+  (`edit`/`write`); a cadence trigger fires every 8 tool calls (floor 5) when nothing has
+  mutated, to catch unproductive read-only streaks between edits.
+- **Dispatch**: silently runs the `reviewer` agent (same `runSingleAgent` path as the
+  `subagent` tool, so it's recorded in the run store / `/runs` like any other dispatch) with a
+  narrow task: check only for `correctness`, `test-gap`, `loop-risk`, `scope-drift`, and
+  `unsafe-change` — not a full style review. Output is a structured `expect` JSON contract
+  (`{ findings: [{ severity, category, evidence, recommendedAction }] }`), so an empty result
+  means clean, not silence.
+- **Steer**: when there's at least one finding, one advisory `steer` message is sent — never
+  blocks, purely informational.
+- **Stalemate detection**: findings are fingerprinted (category + evidence); after 3
+  consecutive dispatches with the identical fingerprint, the steer is suppressed (the check
+  keeps running, but you don't get nagged about the same thing forever). A genuinely different
+  finding set, or an empty one, resets the streak.
+- **Cost**: each trigger spawns a real subagent process — this is why it's opt-in, not the
+  default. `subagent/watchdog.ts` holds the pure trigger/stalemate state machine (unit-tested,
+  dependency-free); the dispatch call and `pi.on`/`pi.registerCommand` wiring live in
+  `index.ts` (`dispatchWatchdogReview`).
 
 ## Agent Messaging
 

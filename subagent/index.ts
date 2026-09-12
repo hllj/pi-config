@@ -45,6 +45,21 @@ import {
 } from "./agents.ts";
 import { buildExpectPromptBlock, validateStructuredOutput } from "./expect.ts";
 import {
+	type WatchdogFinding,
+	type WatchdogStalemateState,
+	type WatchdogTriggerState,
+	buildWatchdogReviewTask,
+	formatWatchdogSteer,
+	hashWatchdogFindings,
+	newWatchdogStalemateState,
+	newWatchdogTriggerState,
+	parseWatchdogFindings,
+	recordWatchdogTool,
+	resetWatchdogTriggerState,
+	shouldRunWatchdog,
+	trackWatchdogStalemate,
+} from "./watchdog.ts";
+import {
 	type SubagentMessage,
 	getMessages,
 	getPendingMessages,
@@ -1820,6 +1835,71 @@ const SubagentParams = Type.Object({
 	contextFiles: ContextFilesSchema,
 	expect: ExpectSchema,
 });
+
+/** Output contract for the watchdog's review dispatch (see watchdog.ts). */
+const WatchdogOutputSchema = Type.Object({
+	findings: Type.Array(
+		Type.Object({
+			severity: StringEnum(["high", "medium", "low"] as const),
+			category: StringEnum(
+				["correctness", "test-gap", "loop-risk", "scope-drift", "unsafe-change"] as const,
+			),
+			evidence: Type.String(),
+			recommendedAction: Type.String(),
+		}),
+	),
+});
+
+const WATCHDOG_REVIEW_TIMEOUT_MS = 120_000;
+const WATCHDOG_REVIEW_AGENT = "reviewer";
+
+/**
+ * Dispatch a single, silent watchdog review via the `reviewer` agent. Reuses
+ * runSingleAgent (the same dispatch path as the `subagent` tool) so watchdog
+ * runs get the same run-store recording and timeout handling — just without
+ * a user-facing tool call. Returns parsed findings, or an error string
+ * (never throws — the caller treats a failed review as "nothing to report").
+ */
+async function dispatchWatchdogReview(ctx: {
+	cwd: string;
+	sessionManager?: {
+		getSessionDir?(): string | undefined;
+		getSessionId?(): string | undefined;
+		getSessionFile?(): string | undefined;
+	};
+}): Promise<{ findings: WatchdogFinding[] } | { error: string }> {
+	const discovery = discoverAgents(ctx.cwd, "user");
+	const agents = discovery.agents;
+	if (!agents.some((a) => a.name === WATCHDOG_REVIEW_AGENT)) {
+		return { error: `watchdog: no "${WATCHDOG_REVIEW_AGENT}" agent available` };
+	}
+	const session = buildSessionLink(ctx.sessionManager);
+	const result = await runSingleAgent(ctx.cwd, {}, agents, WATCHDOG_REVIEW_AGENT, {
+		task: buildWatchdogReviewTask(ctx.cwd),
+		cwd: ctx.cwd,
+		makeDetails: () => ({
+			mode: "single" as const,
+			agentScope: "user" as const,
+			projectAgentsDir: null,
+			results: [],
+		}),
+		expect: {
+			type: "json",
+			jsonSchema: WatchdogOutputSchema,
+			description: "Watchdog findings — empty array when nothing to report.",
+		},
+		mode: "single",
+		timeoutMs: WATCHDOG_REVIEW_TIMEOUT_MS,
+		session,
+	});
+	if (isFailedResult(result)) {
+		return { error: result.errorMessage || result.stderr || "watchdog review failed" };
+	}
+	if (result.structuredOutput === undefined) {
+		return { error: result.expectError || "watchdog review returned no structured output" };
+	}
+	return { findings: parseWatchdogFindings(result.structuredOutput) };
+}
 
 export default function (pi: ExtensionAPI) {
 	// Feature 1: list_agents tool
@@ -4076,6 +4156,101 @@ export default function (pi: ExtensionAPI) {
 
 			const text = result.content[0];
 			return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+		},
+	});
+
+	// ── Watchdog: live in-session review (see watchdog.ts, IMPROVEMENT-PLAN.md Gap 1) ──
+	const isSubagentChild = process.env.PI_SUBAGENT_CHILD === "1";
+	const watchdogStateFile = () =>
+		path.join(os.homedir(), ".pi", "agent", "watchdog", "state.json");
+	const readWatchdogEnabled = (): boolean => {
+		try {
+			return JSON.parse(fs.readFileSync(watchdogStateFile(), "utf8")).enabled === true;
+		} catch {
+			return false;
+		}
+	};
+	let watchdogEnabled = readWatchdogEnabled();
+	const writeWatchdogEnabled = (on: boolean) => {
+		try {
+			fs.mkdirSync(path.dirname(watchdogStateFile()), { recursive: true });
+			fs.writeFileSync(
+				watchdogStateFile(),
+				JSON.stringify({ enabled: on }, null, 2),
+				"utf8",
+			);
+		} catch {
+			/* state file unwritable — in-memory toggle for this session */
+		}
+	};
+	let watchdogHinted = false;
+	let watchdogErrorNotified = false;
+	let watchdogRunning = false;
+	const watchdogTrigger: WatchdogTriggerState = newWatchdogTriggerState();
+	const watchdogStalemate: WatchdogStalemateState = newWatchdogStalemateState();
+
+	pi.on("before_agent_start", () => {
+		if (isSubagentChild || !watchdogEnabled || watchdogHinted) return;
+		watchdogHinted = true;
+		return {
+			message: {
+				customType: "watchdog-state",
+				content:
+					"The watchdog is ON: a reviewer subagent will periodically check recent changes (at a mutating turn, or every few tool calls) for correctness risk, test gaps, loop risk, scope drift, and unsafe changes, and steer you once if it finds something. Advisory, event-driven, never blocks. Disable with /watchdog.",
+				display: true,
+			},
+		};
+	});
+
+	pi.on("tool_execution_start", (event) => {
+		if (isSubagentChild || !watchdogEnabled) return;
+		recordWatchdogTool(watchdogTrigger, event.toolName);
+	});
+
+	pi.on("turn_end", async (_event, ctx) => {
+		if (isSubagentChild || !watchdogEnabled || watchdogRunning) return;
+		if (!shouldRunWatchdog(watchdogTrigger)) return;
+		resetWatchdogTriggerState(watchdogTrigger);
+
+		watchdogRunning = true;
+		try {
+			const outcome = await dispatchWatchdogReview({
+				cwd: ctx.cwd,
+				sessionManager: ctx.sessionManager,
+			});
+			if ("error" in outcome) {
+				if (!watchdogErrorNotified) {
+					watchdogErrorNotified = true;
+					ctx.ui.notify(`Watchdog review failed: ${outcome.error}`, "warning");
+				}
+				return;
+			}
+			const hash = hashWatchdogFindings(outcome.findings);
+			const suppressed = trackWatchdogStalemate(watchdogStalemate, hash);
+			if (outcome.findings.length > 0 && !suppressed) {
+				pi.sendUserMessage(formatWatchdogSteer(outcome.findings), {
+					deliverAs: "steer",
+				});
+			}
+		} finally {
+			watchdogRunning = false;
+		}
+	});
+
+	pi.registerCommand("watchdog", {
+		description:
+			"Toggle the watchdog (persisted): periodically dispatches a reviewer subagent to check recent changes for correctness risk, test gaps, loop risk, scope drift, and unsafe changes, steering once if it finds something.",
+		handler: async (_args, ctx) => {
+			watchdogEnabled = !watchdogEnabled;
+			writeWatchdogEnabled(watchdogEnabled);
+			if (watchdogEnabled) watchdogHinted = false;
+			resetWatchdogTriggerState(watchdogTrigger);
+			ctx.ui.notify(
+				watchdogEnabled
+					? "Watchdog ON: a reviewer subagent will periodically check recent changes and steer once if it finds something."
+					: "Watchdog OFF.",
+				watchdogEnabled ? "info" : "warning",
+			);
 		},
 	});
 }

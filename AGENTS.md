@@ -40,7 +40,7 @@ pi-config/                 (= ~/.pi/agent/extensions)
 ├── learning/              extension (index.ts): failure learning — captures tool/subagent failures, fingerprints + dedupes into failure-store.ts (pure, unit-tested), /learn + learn tool close the loop, session-notes bridge, skill drafting (remember → improve)
 ├── monitor/               extension (index.ts): monitor_* tools; own package.json + node_modules (ws dep)
 ├── plan-mode/             extension (index.ts): /plan, /plan-todos, Ctrl+Alt+P
-├── subagent/              extension (index.ts): scout/planner/reviewer/worker/general + run store + workflow engine
+├── subagent/              extension (index.ts): scout/planner/reviewer/worker/general/evidence-auditor + run store + workflow engine + watchdog
 │   ├── agents/*.md        subagent definitions (YAML frontmatter: name/description/model/tools)
 │   ├── prompts/*.md       bundled workflows (/implement, /scout-and-plan, /implement-and-review)
 │   └── tests/             unit suites (run-unit.sh, run-widget.sh) + e2e-smoke.sh
@@ -98,9 +98,10 @@ npm run setup            # (re)create type-checking symlinks into global pi  [sh
 npm run typecheck        # tsc --noEmit  (npm per-run setup first via pretypecheck)
 npm run lint             # eslint .  (flat config, pragmatic: real bugs/dead code, not strict-any gate)
 npm run lint:fix         # eslint . --fix  (autofix what's safe)
-npm test                 # all suites: test:subagent + test:subagent:widget + test:todo + test:dev-workflows + test:verify-guard + test:learning + test:notes
+npm test                 # all suites: test:subagent + test:subagent:widget + test:subagent:watchdog + test:todo + test:dev-workflows + test:verify-guard + test:learning + test:notes
 npm run test:subagent    # bash subagent/tests/run-unit.sh
 npm run test:subagent:widget  # bash subagent/tests/run-widget.sh
+npm run test:subagent:watchdog  # bash subagent/tests/run-watchdog.sh
 npm run test:todo        # node todo/todo-widget.test.ts
 npm run test:learning    # node learning/failure-store.test.ts
 npm run test:verify-guard # node tests/verify-guard.test.ts

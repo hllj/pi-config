@@ -10,12 +10,12 @@ Our `reviewer` agent is dispatched manually, after the fact, on a diff. pi-subag
 
 This maps directly to two SWE-bench findings: (1) our own `loop-guard.ts` (in pi-bench) only catches literal identical-tool-call repeats and a git-log/show/blame regex streak — a *semantic* loop (varying commands, same unproductive direction, e.g. chasing version tags across a repo) slips through entirely; (2) the config-file-pollution guard there only fires once, at the end. A live watchdog catches both classes the moment they happen, in-session, not just in the benchmark's own driver code.
 
-- [ ] Design a `watchdog` capability as a new module (`pi-config/subagent/watchdog.ts`): boundary trigger on `turn_end` when the turn included a mutation (`edit`/`write`), plus an optional cadence trigger (every N tool calls, floor 5, configurable).
-- [ ] Reuse the existing `reviewer` agent's model/tools as the default watchdog model, but make it overridable (a cheaper/faster model for continuous monitoring vs. the heavier one used for on-demand review).
-- [ ] Structured findings only: `{ severity, category ("correctness"|"test-gap"|"loop-risk"|"scope-drift"|"unsafe-change"), evidence, recommendedAction }`, steered into the transcript only when non-empty — mirrors the `verify-guard.ts` pattern of "advisory, event-driven, never blocks."
-- [ ] Stalemate guard: hash the finding set; after 3 identical hashes in a row, stop surfacing (same shape as `trackGitArchaeology`'s streak-then-reset in pi-bench's `loop-guard.ts` — steal the pattern, not the code).
-- [ ] Persisted toggle `/watchdog`, default state file at `~/.pi/agent/watchdog/state.json`, following the exact `verify-guard.ts` / `dev-workflows.ts` nudge-state precedent already in this repo (one-time session hint, subagent children never trigger it).
-- [ ] This is the most direct fix for two SWE-bench pain points — prioritize it first.
+- [x] Design a `watchdog` capability as a new module (`pi-config/subagent/watchdog.ts`): boundary trigger on `turn_end` when the turn included a mutation (`edit`/`write`), plus a cadence trigger (every 8 tool calls, floor 5, configurable via `shouldRunWatchdog`'s second arg).
+- [x] ~~Reuse the existing `reviewer` agent's model/tools as the default watchdog model, but make it overridable~~ — shipped as: always dispatches `reviewer` by name (its own frontmatter `model` applies); overridable model per-trigger was skipped as unneeded speculative config (no evidence a different model is needed for the watchdog pass vs. an on-demand review).
+- [x] Structured findings only: `{ severity, category ("correctness"|"test-gap"|"loop-risk"|"scope-drift"|"unsafe-change"), evidence, recommendedAction }`, steered into the transcript only when non-empty — mirrors the `verify-guard.ts` pattern of "advisory, event-driven, never blocks." (Skipped the LSP zero-cost pre-pass — no `pi.tools`-style programmatic tool-call API exists for an extension to invoke `lsp_diagnostics` itself; revisit if that API lands.)
+- [x] Stalemate guard: hash the finding set; after 3 identical hashes in a row, stop surfacing (same shape as `trackGitArchaeology`'s streak-then-reset in pi-bench's `loop-guard.ts`).
+- [x] Persisted toggle `/watchdog`, default state file at `~/.pi/agent/watchdog/state.json`, following the exact `verify-guard.ts` / `dev-workflows.ts` nudge-state precedent already in this repo (one-time session hint, subagent children never trigger it).
+- [x] Shipped: `subagent/watchdog.ts` (pure, 24 unit tests via `npm run test:subagent:watchdog`) + `dispatchWatchdogReview`/wiring in `index.ts`, reusing `runSingleAgent` so watchdog runs get the same run-store recording as any other dispatch. Documented in `subagent/README.md`'s "Watchdog" section.
 
 ## Gap 2: reviewer has no evidence bar or verdict enum
 
@@ -23,9 +23,9 @@ Our `subagent/agents/reviewer.md` uses a loose Critical/Warning/Suggestion forma
 
 This is the concrete fix for the SWE-bench judge problem: 3 of 15 fails were the judge saying "correct" when the container test disagreed (the RFC7231 `utcnow()` time-trap, the byte-diff false positive). A verdict-enum + evidence-gate contract, if applied to pi-bench's own judge prompt (see the companion plan `pi-bench/plans/2026-09-12-harness-improvements-round-2.md`, Task 7), and to our own `reviewer.md` for everyday dev work, stops rubber-stamp reviews in both places.
 
-- [ ] Rewrite `subagent/agents/reviewer.md`'s output format section to require: each finding cites either a failing test/repro command, an exact source line contradicting the claim, or a stated contract violation — no finding admitted on "looks risky" alone.
-- [ ] Add a mandatory closing line: `Merge verdict: BLOCK | OK | OK with notes`, with BLOCK requiring at least one evidenced P0/P1 finding.
-- [ ] Update `skills/subagents/SKILL.md` §6 ("Use subagents as a review/verification gate") to reference the verdict enum so callers know to gate on it programmatically (e.g. via `expect` JSON schema: `{ verdict: "BLOCK"|"OK"|"OK with notes", findings: [...] }`).
+- [x] Rewrite `subagent/agents/reviewer.md`'s output format section to require: each finding cites either a failing test/repro command, an exact source line contradicting the claim, or a stated contract violation — no finding admitted on "looks risky" alone.
+- [x] Add a mandatory closing line: `Merge verdict: BLOCK | OK | OK with notes`, with BLOCK requiring at least one evidenced Critical finding. (Kept the existing Critical/Warning/Suggestion severity naming rather than introducing P0/P1/P2 — no other doc in this repo uses that scheme, and renaming would be pure churn.)
+- [x] Update `skills/subagents/SKILL.md` §6 ("Use subagents as a review/verification gate") to reference the verdict enum so callers know to gate on it programmatically.
 
 ## Gap 3: no structured "decision-consistency" or "evidence-audit" agent role
 
@@ -33,8 +33,8 @@ pi-subagents' **oracle** agent forks the parent's context, reconstructs inherite
 
 We have `general` (all-rounder) and `reviewer` (diff review) but nothing that takes "here's what we decided and why, check it's still consistent" or "here's a claim, verify it against the source" as a first-class, narrowly-scoped task shape. Both would help catch exactly the class of error the SWE-bench judge missed: a claim ("this is algebraically equivalent to the reference") that's false on inspection of the actual frozen test.
 
-- [ ] Add `subagent/agents/evidence-auditor.md`: read-only, tools `read, grep, find, ls`; given a claim + a set of source files/tests, report `supported | contradicted | unclear | missing-evidence` with the exact line(s) that decide it. No open-ended research — it audits, it doesn't investigate.
-- [ ] Consider `oracle.md` only if a real need for cross-session decision-consistency checks shows up in practice (fork's context-inheritance trick is `pi`-runtime-specific to how pi-subagents forks; verify our own `fork`-mode subagent semantics support the same "inherit full context" trick before committing to this — lower priority than evidence-auditor, which needs no special runtime support).
+- [x] Add `subagent/agents/evidence-auditor.md`: read-only, tools `read, grep, find, ls`; given a claim + a set of source files/tests, report `supported | contradicted | unclear | missing-evidence` with the exact line(s) that decide it. No open-ended research — it audits, it doesn't investigate. Wired into `skills/subagents/SKILL.md`'s agent table + "pick the agent" section, `subagent/README.md`, and the global `~/.pi/agent/AGENTS.md` agent table.
+- [ ] `oracle.md` — still not built; still gated on "a real need for cross-session decision-consistency checks shows up in practice," which hasn't happened yet. Left open on purpose.
 
 ## Gap 4: no budget-driven idle nudge for long-running goals
 
