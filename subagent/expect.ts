@@ -40,8 +40,13 @@ export function buildExpectPromptBlock(schema: unknown): string {
 }
 
 /**
- * Parse the agent's final text into a JSON value, tolerating a single
- * markdown-fence wrapper. Returns `{ ok: true, value }` or `{ ok: false, error }`.
+ * Parse the agent's final text into a JSON value. Tries, in order: the raw
+ * text; a single leading/trailing markdown-fence wrapper stripped; a fenced
+ * code block found ANYWHERE in the text (observed live: a model prepending a
+ * one-sentence summary before a ```json fence — a leading/trailing strip
+ * alone doesn't catch this since the text doesn't *start* with the fence);
+ * and finally the widest {...} or [...] span in the text. First candidate
+ * that parses wins. Returns `{ ok: true, value }` or `{ ok: false, error }`.
  */
 export function tryParseJson(
 	text: string,
@@ -50,26 +55,34 @@ export function tryParseJson(
 	if (trimmed === "") {
 		return { ok: false, error: "final message is empty" };
 	}
-	try {
-		return { ok: true, value: JSON.parse(trimmed) };
-	} catch {
-		// Retry once after stripping a leading ```json / ``` fence.
-		const stripped = trimmed
-			.replace(/^```(?:json)?\s*/i, "")
-			.replace(/```\s*$/, "")
-			.trim();
-		if (stripped === trimmed) {
-			return { ok: false, error: "final message is not valid JSON" };
-		}
+
+	const candidates: string[] = [trimmed];
+
+	const unwrapped = trimmed
+		.replace(/^```(?:json)?\s*/i, "")
+		.replace(/```\s*$/, "")
+		.trim();
+	if (unwrapped !== trimmed) candidates.push(unwrapped);
+
+	const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+	if (fenceMatch) candidates.push(fenceMatch[1].trim());
+
+	const objectMatch = trimmed.match(/\{[\s\S]*\}/);
+	if (objectMatch) candidates.push(objectMatch[0]);
+	const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
+	if (arrayMatch) candidates.push(arrayMatch[0]);
+
+	for (const candidate of candidates) {
 		try {
-			return { ok: true, value: JSON.parse(stripped) };
+			return { ok: true, value: JSON.parse(candidate) };
 		} catch {
-			return {
-				ok: false,
-				error: "final message is not valid JSON (even after stripping fences)",
-			};
+			/* try the next candidate */
 		}
 	}
+	return {
+		ok: false,
+		error: "final message is not valid JSON (even after stripping fences and salvage)",
+	};
 }
 
 export interface ExpectValidationResult {

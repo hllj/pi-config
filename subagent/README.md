@@ -13,7 +13,7 @@ Delegate tasks to specialized subagents with isolated context windows.
 - **Abort support**: Ctrl+C propagates to kill subagent processes; `session_shutdown` on quit kills children + marks records `aborted`
 - **Per-agent/step timeout**: `timeoutMs` kills runaway subagents (SIGTERM → SIGKILL)
 - **Context files**: Inject file contents into an agent's system prompt via `contextFiles`
-- **Structured output**: `expect` JSON-Schema contracts validated after completion
+- **Structured output**: `expect` JSON-Schema contracts validated after completion; `tryParseJson` salvages the JSON from around model-added prose (leading/trailing text, a fenced block anywhere in the message, or bare `{...}`/`[...]`), not just a leading/trailing fence — found via a live watchdog run where the model prefaced its JSON with a one-sentence summary
 - **Cross-agent messaging**: `send_message`/`get_messages` with delivery status; pending messages are injected into the next spawn of the recipient
 - **Running-subagents widget + `/agents`** screen showing live subagent processes
 - **Workflow persistence**: per-step `appendEntry`; interrupted workflows can be inspected via `get_workflow` and resumed via `resume_workflow`
