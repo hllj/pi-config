@@ -154,14 +154,88 @@ depending on model pricing. Run a single script to check one area cheaply;
 run all five before/after a change that touches dispatch, agent prompts, or
 the workflow engine.
 
+## Run log
+
+**2026-09-12, first full run:**
+
+- `e2e-agents.sh`: **all 6 agents passed** — every mechanical check and every
+  realistic-task contract check (worker's `## Test Evidence`, reviewer's
+  `Merge verdict:` line, evidence-auditor correctly returning `contradicted`
+  on the known-false claim, planner leaving `calc.py` untouched, etc.).
+- `e2e-workflow-prompts.sh`: **all 3 prompts passed**, correct chain order in
+  every case. Also resolved a "Known gaps" uncertainty: **slash-command
+  expansion (`/scout-and-plan <query>`) does work correctly in one-shot `-p`
+  mode** — the literal-text fallback path was never needed.
+- `e2e-run-workflow.sh`: **found two real bugs on first run**, both fixed:
+  1. A genuine, unrelated defect: the `session-memory` extension
+     intermittently throws `"ctx is stale after session replacement or
+     reload"`, crashing the entire `pi -p` invocation before it processes the
+     prompt at all (observed once in ~30 live calls across the full suite —
+     rare, but real). This is a bug in a different extension, not in
+     `subagent` — flagged separately, not fixed here. Mitigated at the test
+     level with `run_pi_retrying()` in the new `e2e-lib.sh` (shared by all
+     five scripts): retry the `pi` invocation exactly once if this specific
+     error string appears in the output.
+  2. A bug in the test script itself: the condition/retry tests used
+     `timeoutMs: 100` to force deterministic step failure, but
+     `run_workflow`'s schema enforces a minimum of `1000`. The model
+     sometimes noticed the validation error and self-corrected to a working
+     value, sometimes didn't — non-deterministic pass/fail unrelated to the
+     actual feature being tested. Fixed by passing a schema-valid `1200`ms
+     up front, removing the self-correction dependency entirely.
+  A third bug surfaced fixing the second: pairing `timeoutMs: 1200` with a
+  bare "reply OK" task was *itself* non-deterministic — a trivial reply with
+  no forced work can occasionally complete faster than a cold subprocess
+  spawn "should" take, so step1 sometimes didn't fail at all and step2
+  legitimately dispatched (correct behavior for a condition gate, but it
+  meant the test's premise — "step1 always fails" — no longer held). Fixed
+  by tying the step's duration to an explicit `bash "sleep 3 && echo OK"`
+  instruction, decoupling forced failure from model/network speed entirely.
+  After all three fixes: condition gate, retry count, `parallelGroup`
+  concurrency, budget nudge, and `resume_workflow` all passed cleanly, with
+  the `session-memory` transient crash caught and retried successfully 3
+  times across the debugging runs (real but rare — worth fixing upstream in
+  `session-memory` itself at some point, tracked here as a known issue since
+  this plan's scope is `subagent`, not `session-memory`).
+- `e2e-features.sh`: **both passed** — the watchdog's trigger→dispatch→parse
+  path completed cleanly (confirms the `expect.ts` salvage fix from the
+  prior session holds), and the spawn ceiling correctly warned once after
+  exceeding `PI_SUBAGENT_SPAWN_CEILING=1`. The real
+  `~/.pi/agent/watchdog/state.json` was correctly restored to its
+  pre-test (absent) state afterward.
+- `e2e-proactive.sh` (informational, always exits 0): **all 3 cases
+  not-delegated** — including the "3 independent parallel checks" case,
+  which is explicitly parallelizable and still ran entirely inline. This
+  matches and reinforces the existing baseline in `IMPROVEMENT-PLAN.md`: the
+  default model does not reliably self-trigger delegation from prose
+  guidance alone, even when a task's shape matches a documented trigger
+  condition closely. Expected, not a regression.
+
+**Net result of the first full run:** every hard-gated section (A, B, C, E)
+passed after fixing the three real bugs surfaced along the way — two in the
+test scripts themselves (invalid `timeoutMs`, a non-deterministic forced
+failure), one in a different extension (`session-memory`'s intermittent
+stale-ctx crash, mitigated at the test-harness level via `e2e-lib.sh`'s
+`run_pi_retrying`, not fixed at the source — that's a separate, standalone
+issue outside this plan's scope). The `session-memory` bug is worth a
+dedicated look at some point: it hit 3 times across roughly 35 live calls in
+this run, always identical ("ctx is stale after session replacement or
+reload"), always fully masked by one retry.
+
 ## Known gaps (not covered by this plan)
 
 - **`requiresApproval` workflow gates** — need real interactive UI
   (`ctx.hasUI`); only manually testable in a live TUI session, not `-p` mode.
-- **`/name` slash-command expansion in `-p` mode** — untested assumption that
-  prompt templates expand the same way non-interactively; Section B's runner
-  falls back to literal expanded text if this doesn't hold, and the script
-  notes which path it took.
+- ~~`/name` slash-command expansion in `-p` mode~~ — **resolved**: confirmed
+  working correctly in the first live run (see "Run log"). Section B's
+  literal-text fallback path is kept as a safety net but has never been
+  needed.
+- **A real, unrelated `session-memory` extension bug** — an intermittent
+  `"ctx is stale after session replacement or reload"` crash, found live
+  while running this suite (see "Run log"). Mitigated at the test-harness
+  level (`e2e-lib.sh`'s `run_pi_retrying`, retry-once) but not fixed at the
+  source; out of scope for this plan (which covers `subagent`, not
+  `session-memory`) but worth a dedicated look.
 - **True background/detached execution** — this extension always runs
   subagents as sessions inside the parent process (see `README.md`'s Security
   Model); there is no detached-runner equivalent to test, unlike

@@ -93,6 +93,14 @@ and every failure is collected into one final report, so one bad case doesn't
 hide the rest. `e2e-proactive.sh` always exits 0 — see `TESTING-PLAN.md`
 Section D for why.
 
+All five source `e2e-lib.sh` for `ordered_run_dirs()` and
+`run_pi_retrying()` — the latter retries a `pi` invocation exactly once if
+its output matches a known, unrelated, intermittent crash in the
+`session-memory` extension (`"ctx is stale after session replacement or
+reload"`, first found running this suite live — see `TESTING-PLAN.md`'s
+"Run log"). That's a real bug worth fixing at the source eventually; this
+retry only keeps these tests from flaking on it in the meantime.
+
 ## Housekeeping
 
 - `run-unit.sh` / `e2e-smoke.sh` clean up their temp workspaces on exit.

@@ -15,6 +15,10 @@
 #   ./e2e-features.sh --no-cleanup   # keep scratch dirs for inspection
 set -o pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=./e2e-lib.sh
+. "$SCRIPT_DIR/e2e-lib.sh"
+
 WORK="$(mktemp -d)"
 CLEANUP=1
 if [ "$1" = "--no-cleanup" ]; then CLEANUP=0; fi
@@ -54,16 +58,6 @@ fail() {
 	FAILED=1
 }
 
-ordered_run_dirs() {
-	store="$1"
-	for d in "$store"/sg-*/; do
-		[ -d "$d" ] || continue
-		base="$(basename "$d")"
-		ts="$(echo "$base" | cut -d- -f2)"
-		echo "$ts $d"
-	done | sort -n | awk '{print $2}'
-}
-
 echo "--- Watchdog: trigger + dispatch + parse (regression for the expect.ts fix) ---"
 REPO="$WORK/repo"
 mkdir -p "$REPO"
@@ -76,7 +70,7 @@ echo '{"enabled": true}' >"$WATCHDOG_STATE"
 store="$WORK/subagents-watchdog"
 parent="$WORK/parent-watchdog"
 mkdir -p "$store" "$parent"
-(cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" "$PI" --name e2e-watchdog -p "Add a function greet(name) that returns 'Hello, ' + name to util.js.") >"$WORK/watchdog.out" 2>&1
+(cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" run_pi_retrying "$PI" "$WORK/watchdog.out" --name e2e-watchdog -p "Add a function greet(name) that returns 'Hello, ' + name to util.js.")
 
 dirs=$(ordered_run_dirs "$store")
 count=$(echo "$dirs" | grep -c . || true)
@@ -105,8 +99,8 @@ echo "--- Spawn ceiling: PI_SUBAGENT_SPAWN_CEILING=1 warns on the 2nd dispatch -
 store2="$WORK/subagents-ceiling"
 parent2="$WORK/parent-ceiling"
 mkdir -p "$store2" "$parent2"
-(cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store2" PI_CODING_AGENT_SESSION_DIR="$parent2" PI_SUBAGENT_SPAWN_CEILING=1 "$PI" --name e2e-ceiling -p \
-	'Call the subagent tool with parallel tasks: two general agents, one replying CEIL_A and one replying CEIL_B.') >"$WORK/ceiling.out" 2>&1
+(cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store2" PI_CODING_AGENT_SESSION_DIR="$parent2" PI_SUBAGENT_SPAWN_CEILING=1 run_pi_retrying "$PI" "$WORK/ceiling.out" --name e2e-ceiling -p \
+	'Call the subagent tool with parallel tasks: two general agents, one replying CEIL_A and one replying CEIL_B.')
 
 parent_session2="$(find "$parent2" -name '*.jsonl' | head -1)"
 if [ -z "$parent_session2" ]; then

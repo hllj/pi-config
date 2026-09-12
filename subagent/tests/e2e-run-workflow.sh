@@ -5,12 +5,20 @@
 #
 # Each workflow's steps are dictated to the model as an explicit JSON payload
 # ("call run_workflow with exactly these steps") rather than left to the
-# model's own judgment — this is a mechanism test, not a delegation-judgment
+# model's own judgment - this is a mechanism test, not a delegation-judgment
 # test, so we want the LLM just passing structured params through reliably.
 #
-# Step "failure" is forced deterministically via a very short timeoutMs
-# (100ms - no real task completes that fast), not by asking the model to
-# fail on cue, so condition/retry assertions don't depend on model behavior.
+# Step "failure" is forced deterministically via a short but SCHEMA-VALID
+# timeoutMs (1200ms - the schema enforces a minimum of 1000ms) PAIRED WITH a
+# task that must call `bash "sleep 3 && echo OK"` before replying. Two live
+# bugs were found and fixed getting here: (1) an invalid 100ms timeoutMs
+# value made the model inconsistently self-correct across runs: fixed by
+# passing a valid value up front; (2) a bare "reply OK" task with no forced
+# work sometimes completed under the timeout anyway (a trivial reply can be
+# faster than a cold subprocess spawn in the *model's* favor on occasion),
+# making the forced failure itself non-deterministic: fixed by tying the
+# step's duration to an explicit `sleep 3`, decoupling "does this step fail"
+# from model/network speed entirely.
 #
 # requiresApproval is NOT covered here - see TESTING-PLAN.md "Known gaps"
 # (needs ctx.hasUI, which -p mode does not reliably provide).
@@ -19,6 +27,10 @@
 #   ./e2e-run-workflow.sh                # cleans up after
 #   ./e2e-run-workflow.sh --no-cleanup    # keep scratch dirs for inspection
 set -o pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=./e2e-lib.sh
+. "$SCRIPT_DIR/e2e-lib.sh"
 
 WORK="$(mktemp -d)"
 CLEANUP=1
@@ -47,28 +59,18 @@ REPO="$WORK/repo"
 mkdir -p "$REPO"
 (cd "$REPO" && git init -q && git config user.email t@t.com && git config user.name t && echo x >f.txt && git add -A && git commit -q -m init)
 
-ordered_run_dirs() {
-	store="$1"
-	for d in "$store"/sg-*/; do
-		[ -d "$d" ] || continue
-		base="$(basename "$d")"
-		ts="$(echo "$base" | cut -d- -f2)"
-		echo "$ts $d"
-	done | sort -n | awk '{print $2}'
-}
-
 run_workflow_test() {
 	label="$1"; steps_json="$2"
 	store="$WORK/subagents-$label"
 	parent="$WORK/parent-$label"
 	mkdir -p "$store" "$parent"
 	prompt="Call the run_workflow tool exactly once with this literal steps array (pass it through as-is, do not modify it): $steps_json"
-	( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" "$PI" --name "e2e-$label" -p "$prompt" ) >"$WORK/$label.out" 2>&1
+	( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" run_pi_retrying "$PI" "$WORK/$label.out" --name "e2e-$label" -p "$prompt" )
 	echo "$store $parent"
 }
 
 echo "--- Condition gate: step2 skipped when step1's exitCode != 0 ---"
-result=$(run_workflow_test "condition" '[{"agent":"general","task":"reply OK","timeoutMs":100,"errorHandler":{"strategy":"skip"}},{"agent":"general","task":"reply STEP2_RAN","condition":{"type":"exitCodeEquals","value":0}}]')
+result=$(run_workflow_test "condition" '[{"agent":"general","task":"You MUST call bash with the command \"sleep 3 && echo OK\" and wait for it to finish before replying.","timeoutMs":1200,"errorHandler":{"strategy":"skip"}},{"agent":"general","task":"reply STEP2_RAN","condition":{"type":"exitCodeEquals","value":0}}]')
 store="$(echo "$result" | awk '{print $1}')"
 dirs=$(ordered_run_dirs "$store")
 count=$(echo "$dirs" | grep -c . || true)
@@ -81,7 +83,7 @@ else
 fi
 
 echo "--- Error handler retry: maxRetries respected, workflow ends failed ---"
-result=$(run_workflow_test "retry" '[{"agent":"general","task":"reply OK","timeoutMs":100,"errorHandler":{"strategy":"retry","maxRetries":1}}]')
+result=$(run_workflow_test "retry" '[{"agent":"general","task":"You MUST call bash with the command \"sleep 3 && echo OK\" and wait for it to finish before replying.","timeoutMs":1200,"errorHandler":{"strategy":"retry","maxRetries":1}}]')
 store="$(echo "$result" | awk '{print $1}')"
 dirs=$(ordered_run_dirs "$store")
 count=$(echo "$dirs" | grep -c . || true)
@@ -118,7 +120,7 @@ store="$WORK/subagents-budget"
 parent="$WORK/parent-budget"
 mkdir -p "$store" "$parent"
 prompt='Call the run_workflow tool exactly once with budgetTokens: 500 and this literal steps array: [{"agent":"general","task":"reply OK"},{"agent":"general","task":"reply again with OK2"}]'
-( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" "$PI" --name e2e-budget -p "$prompt" ) >"$WORK/budget.out" 2>&1
+( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" run_pi_retrying "$PI" "$WORK/budget.out" --name e2e-budget -p "$prompt" )
 parent_session="$(find "$parent" -name '*.jsonl' | head -1)"
 if [ -z "$parent_session" ] || ! grep -q "Workflow budget nudge" "$parent_session"; then
 	fail "budget: no 'Workflow budget nudge' steer found in the parent session despite a 500-token budget on a multi-step workflow"
@@ -145,7 +147,7 @@ if [ "$STEP1_SEEN" = "1" ]; then
 	kill -9 "$RESUME_PID" 2>/dev/null
 	wait "$RESUME_PID" 2>/dev/null
 	resume_prompt="Call resume_workflow with workflowId omitted (resume the most recent workflow)."
-	( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$WORK/parent-resume2" "$PI" --name e2e-resume2 -p "$resume_prompt" ) >"$WORK/resume2.out" 2>&1
+	( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$WORK/parent-resume2" run_pi_retrying "$PI" "$WORK/resume2.out" --name e2e-resume2 -p "$resume_prompt" )
 	dirs=$(ordered_run_dirs "$store")
 	completed=$(grep -l '"status": "completed"' "$store"/sg-*/record.json 2>/dev/null | wc -l | tr -d ' ')
 	if [ "${completed:-0}" -ge 2 ]; then

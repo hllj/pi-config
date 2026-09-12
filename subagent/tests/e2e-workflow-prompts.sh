@@ -17,6 +17,8 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROMPTS_DIR="$SCRIPT_DIR/../prompts"
+# shellcheck source=./e2e-lib.sh
+. "$SCRIPT_DIR/e2e-lib.sh"
 WORK="$(mktemp -d)"
 CLEANUP=1
 if [ "$1" = "--no-cleanup" ]; then CLEANUP=0; fi
@@ -66,26 +68,12 @@ def test_add():
 PY
 (cd "$REPO" && git init -q && git config user.email t@t.com && git config user.name t && git add -A && git commit -q -m init)
 
-# Order run dirs under a store by startedAt (embedded as the runId's 2nd
-# hyphen-delimited field: sg-<epochms>-<rand>) — split the BASENAME only,
-# not the full path, since the store dir itself may contain hyphens (e.g.
-# "subagents-scout-and-plan-slash") that would otherwise pollute the split.
-ordered_run_dirs() {
-	store="$1"
-	for d in "$store"/sg-*/; do
-		[ -d "$d" ] || continue
-		base="$(basename "$d")"
-		ts="$(echo "$base" | cut -d- -f2)"
-		echo "$ts $d"
-	done | sort -n | awk '{print $2}'
-}
-
 # run_and_count <label> <store_dir> <prompt_text>
 # echoes: "<count> <agent1>,<agent2>,..." (ordered by startedAt) on success
 run_and_count() {
 	label="$1"; store="$2"; prompt="$3"
 	mkdir -p "$store"
-	( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$WORK/parent-$label" "$PI" --name "e2e-$label" -p "$prompt" ) >"$WORK/$label.out" 2>&1
+	( cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$WORK/parent-$label" run_pi_retrying "$PI" "$WORK/$label.out" --name "e2e-$label" -p "$prompt" )
 	status=$?
 	if [ "$status" -ne 0 ]; then
 		echo "0 "

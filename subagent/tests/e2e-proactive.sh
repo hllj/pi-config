@@ -15,6 +15,10 @@
 #   ./e2e-proactive.sh --no-cleanup   # keep scratch dirs for inspection
 set -o pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=./e2e-lib.sh
+. "$SCRIPT_DIR/e2e-lib.sh"
+
 WORK="$(mktemp -d)"
 CLEANUP=1
 if [ "$1" = "--no-cleanup" ]; then CLEANUP=0; fi
@@ -44,7 +48,7 @@ check_dispatched() {
 	store="$WORK/subagents-$label"
 	parent="$WORK/parent-$label"
 	mkdir -p "$store" "$parent"
-	(cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" "$PI" --name "e2e-$label" -p "$prompt") >"$WORK/$label.out" 2>&1
+	(cd "$REPO" && PI_SUBAGENT_SESSION_DIR="$store" PI_CODING_AGENT_SESSION_DIR="$parent" run_pi_retrying "$PI" "$WORK/$label.out" --name "e2e-$label" -p "$prompt")
 	count=$(ls -d "$store"/sg-*/ 2>/dev/null | wc -l | tr -d ' ')
 	if [ "${count:-0}" -ge 1 ]; then
 		modes="$(grep -oh '"mode": "[a-z]*"' "$store"/sg-*/record.json 2>/dev/null | sort -u | tr '\n' ',')"

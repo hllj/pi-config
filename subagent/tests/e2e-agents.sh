@@ -15,6 +15,10 @@
 #   ./e2e-agents.sh --no-cleanup   # keep the scratch repo + store for inspection
 set -o pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=./e2e-lib.sh
+. "$SCRIPT_DIR/e2e-lib.sh"
+
 WORK="$(mktemp -d)"
 CLEANUP=1
 if [ "$1" = "--no-cleanup" ]; then CLEANUP=0; fi
@@ -65,7 +69,7 @@ ORIGINAL_CALC="$(cat "$REPO/calc.py")"
 # ---- helper: run one dispatch, echo the run's newest record dir (or nothing) ----
 run_dispatch() {
 	name="$1"; cwd="$2"; prompt="$3"
-	( cd "$cwd" && "$PI" --name "e2e-$name" -p "$prompt" ) >"$WORK/$name.out" 2>&1
+	( cd "$cwd" && run_pi_retrying "$PI" "$WORK/$name.out" --name "e2e-$name" -p "$prompt" )
 	status=$?
 	if [ "$status" -ne 0 ]; then
 		fail "$name: pi invocation exited $status (see $WORK/$name.out)"
