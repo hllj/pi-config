@@ -76,13 +76,16 @@ import {
 	completeWorkflow,
 	createWorkflowState,
 	failWorkflow,
+	formatBudgetNudge,
 	getWorkflowSummary,
 	handleStepError,
 	hydrateWorkflowState,
+	nextBudgetThresholdCrossed,
 	pauseWorkflow,
 	prepareResume,
 	resumeWorkflow,
 	shouldExecuteStep,
+	totalWorkflowTokens,
 	updateWorkflowState,
 } from "./workflow-engine.ts";
 import {
@@ -1374,6 +1377,12 @@ async function executeSingleWorkflowStep(
 					exitCode,
 					retryCount,
 					endTime: Date.now(),
+					usage: {
+						input: result.usage.input,
+						output: result.usage.output,
+						cacheRead: result.usage.cacheRead,
+						cacheWrite: result.usage.cacheWrite,
+					},
 				},
 				output,
 				exitCode,
@@ -1464,6 +1473,12 @@ async function executeSingleWorkflowStep(
 						exitCode: fbResult.exitCode,
 						retryCount,
 						endTime: Date.now(),
+						usage: {
+							input: fbResult.usage.input,
+							output: fbResult.usage.output,
+							cacheRead: fbResult.usage.cacheRead,
+							cacheWrite: fbResult.usage.cacheWrite,
+						},
 					},
 					output: fbOutput,
 					exitCode: fbResult.exitCode,
@@ -1539,6 +1554,36 @@ export async function executeWorkflowSteps(
 		updateWorkflowWidget(current, exec.ui);
 	};
 	commit(current);
+
+	// Advisory token-budget nudge (see workflow-engine.ts nextBudgetThresholdCrossed):
+	// fires once per threshold (60%/85%) when current.budgetTokens is set, never
+	// blocks or alters control flow.
+	const maybeSendBudgetNudge = () => {
+		if (!current.budgetTokens) return;
+		const total = totalWorkflowTokens(current);
+		const crossed = nextBudgetThresholdCrossed(
+			total,
+			current.budgetTokens,
+			current.budgetNudgesSent,
+		);
+		if (crossed === undefined) return;
+		const nextPendingIndex = current.results.findIndex((r) => r.status === "pending");
+		const nextStep =
+			nextPendingIndex >= 0
+				? { index: nextPendingIndex, agent: current.steps[nextPendingIndex].agent }
+				: undefined;
+		const message = formatBudgetNudge(crossed, total, current.budgetTokens, nextStep);
+		try {
+			exec.pi.sendUserMessage(message, { deliverAs: "steer" });
+		} catch {
+			/* best-effort advisory — never fail the workflow over this */
+		}
+		current = {
+			...current,
+			budgetNudgesSent: [...(current.budgetNudgesSent ?? []), crossed],
+		};
+		commit(current);
+	};
 
 	const steps = current.steps;
 	let i = Math.min(startIndex, steps.length);
@@ -1621,6 +1666,7 @@ export async function executeWorkflowSteps(
 				current = updateWorkflowState(current, o.stepIndex, o.result);
 			}
 			commit(current);
+			maybeSendBudgetNudge();
 			const fatal = outcomes.find((o) => o.failed);
 			if (fatal) {
 				current = failWorkflow(
@@ -1656,6 +1702,7 @@ export async function executeWorkflowSteps(
 			);
 			current = updateWorkflowState(current, gi, out.result);
 			commit(current);
+			maybeSendBudgetNudge();
 			if (out.failed) {
 				current = failWorkflow(
 					current,
@@ -1818,6 +1865,13 @@ const SubagentParams = Type.Object({
 	),
 	workflowName: Type.Optional(
 		Type.String({ description: "Optional name for the workflow" }),
+	),
+	workflowBudgetTokens: Type.Optional(
+		Type.Number({
+			description:
+				"Optional whole-workflow token budget for workflow mode (input+output+cache, summed across steps). At 60%/85% usage, one advisory steer each is sent — never stops the workflow.",
+			minimum: 1,
+		}),
 	),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
@@ -2443,6 +2497,13 @@ export default function (pi: ExtensionAPI) {
 					default: true,
 				}),
 			),
+			budgetTokens: Type.Optional(
+				Type.Number({
+					description:
+						"Optional whole-workflow token budget (input+output+cache, summed across steps). At 60%/85% usage, one advisory steer each is sent naming the remaining budget and the next ready step — the workflow itself is never stopped by this.",
+					minimum: 1,
+				}),
+			),
 		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -2484,12 +2545,12 @@ export default function (pi: ExtensionAPI) {
 							content: [
 								{ type: "text", text: "Canceled: project-local agents not approved." },
 							],
-							details: makeDetails(createWorkflowState(params.steps, params.name)),
+							details: makeDetails(createWorkflowState(params.steps, params.name, params.budgetTokens)),
 						};
 				}
 			}
 
-			let state = createWorkflowState(params.steps, params.name);
+			let state = createWorkflowState(params.steps, params.name, params.budgetTokens);
 
 			const exec: WorkflowRunContext = {
 				pi,
@@ -3471,7 +3532,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Workflow mode: same semantics as run_workflow, driven from the subagent tool.
 			if (params.workflow && params.workflow.length > 0) {
-				const wfState = createWorkflowState(params.workflow, params.workflowName);
+				const wfState = createWorkflowState(params.workflow, params.workflowName, params.workflowBudgetTokens);
 				const makeWfDetails = (s: WorkflowState): { workflow: WorkflowState } => ({
 					workflow: s,
 				});

@@ -161,6 +161,13 @@ Workflow steps additionally support:
 - `errorHandler` — `retry` / `skip` / `fallback` / `abort` strategies
 - `requiresApproval` — pause for manual confirmation
 
+Whole-workflow option (`run_workflow`'s `budgetTokens`, or `workflowBudgetTokens` on the
+`subagent` tool's `workflow` mode): an optional total token budget (input+output+cache, summed
+across steps). At 60%/85% usage, one advisory steer each names the remaining budget and the
+next ready step — purely informational, the workflow is never stopped by this. Persisted on
+the `WorkflowState` (`budgetNudgesSent`) so a `resume_workflow` doesn't repeat a threshold
+already surfaced before the interruption.
+
 ## Workflows: persistence & resume
 
 Workflows persist every state transition via `pi.appendEntry("subagent-workflow", ...)`:

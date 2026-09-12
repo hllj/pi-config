@@ -58,6 +58,8 @@ export interface WorkflowStepResult {
 	approvalGranted?: boolean;
 	startTime?: number;
 	endTime?: number;
+	/** Token usage for this step's dispatch, when known (undefined for skipped/never-run steps). */
+	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
 export interface WorkflowState {
@@ -73,6 +75,10 @@ export interface WorkflowState {
 	/** Set when this state was resumed from a prior session (via resume_workflow). */
 	resumedFromStepIndex?: number;
 	resumedAt?: number;
+	/** Optional whole-workflow token budget (input+output+cache, summed across steps). */
+	budgetTokens?: number;
+	/** Percent thresholds (60, 85) already nudged for, so a resume doesn't repeat one. */
+	budgetNudgesSent?: number[];
 }
 
 /**
@@ -176,6 +182,7 @@ export function generateWorkflowId(): string {
 export function createWorkflowState(
 	steps: WorkflowStep[],
 	name?: string,
+	budgetTokens?: number,
 ): WorkflowState {
 	return {
 		id: generateWorkflowId(),
@@ -189,7 +196,53 @@ export function createWorkflowState(
 		currentStepIndex: 0,
 		status: "running",
 		startTime: Date.now(),
+		...(budgetTokens !== undefined && budgetTokens > 0 ? { budgetTokens } : {}),
 	};
+}
+
+/** Sum of known per-step token usage recorded so far (input+output+cache). */
+export function totalWorkflowTokens(state: WorkflowState): number {
+	return state.results.reduce((sum, r) => {
+		if (!r.usage) return sum;
+		return sum + r.usage.input + r.usage.output + r.usage.cacheRead + r.usage.cacheWrite;
+	}, 0);
+}
+
+const BUDGET_NUDGE_THRESHOLDS = [60, 85] as const;
+
+/**
+ * Given cumulative token usage against a workflow's budget, return the
+ * highest not-yet-sent threshold percent newly crossed, or undefined if
+ * none (no budget set, or nothing new to report). Caller should append the
+ * returned percent to the workflow's budgetNudgesSent so it isn't repeated.
+ */
+export function nextBudgetThresholdCrossed(
+	totalTokens: number,
+	budgetTokens: number | undefined,
+	alreadySent: number[] | undefined,
+): number | undefined {
+	if (!budgetTokens || budgetTokens <= 0) return undefined;
+	const sent = new Set(alreadySent ?? []);
+	const pct = (totalTokens / budgetTokens) * 100;
+	let result: number | undefined;
+	for (const t of BUDGET_NUDGE_THRESHOLDS) {
+		if (pct >= t && !sent.has(t)) result = t;
+	}
+	return result;
+}
+
+/** Advisory text for a crossed budget threshold — never stops the workflow. */
+export function formatBudgetNudge(
+	percent: number,
+	totalTokens: number,
+	budgetTokens: number,
+	nextStep?: { index: number; agent: string },
+): string {
+	const remaining = Math.max(0, budgetTokens - totalTokens);
+	const next = nextStep
+		? `Next ready step: #${nextStep.index + 1} (${nextStep.agent}).`
+		: "No further steps queued.";
+	return `Workflow budget nudge: ~${percent}% of the ${budgetTokens}-token budget used (${totalTokens} tokens so far, ~${remaining} remaining). ${next} Advisory only — the workflow keeps running.`;
 }
 
 /**
