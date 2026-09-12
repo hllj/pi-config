@@ -64,6 +64,35 @@ It uses isolated dirs (`PI_SUBAGENT_SESSION_DIR`, `PI_CODING_AGENT_SESSION_DIR`
 point into a temp dir), so it touches neither your real run store nor your real
 session history.
 
+## Full agent/workflow test plan (opt-in, live)
+
+See `TESTING-PLAN.md` for the full matrix and methodology: every packaged
+agent, every workflow mechanism (chain, `run_workflow`, the bundled prompt
+templates), and natural-language proactive triggering — all invoked by
+prompt, verified against real run-store records and each agent's own
+documented output contract, not just "didn't crash."
+
+```sh
+./e2e-agents.sh            # every agent (scout/planner/reviewer/worker/general/evidence-auditor)
+./e2e-workflow-prompts.sh  # /scout-and-plan, /implement, /implement-and-review
+./e2e-run-workflow.sh      # run_workflow: conditions, retry, parallelGroup, budget nudge, resume
+./e2e-features.sh          # watchdog trigger+dispatch+parse, spawn ceiling
+./e2e-proactive.sh         # informational only — natural-language triggering without naming an agent
+```
+
+Same isolation/credential-gating pattern as `e2e-smoke.sh` (temp
+`PI_SUBAGENT_SESSION_DIR`/`PI_CODING_AGENT_SESSION_DIR`, `SKIP` without
+`~/.pi/agent/auth.json`, `--no-cleanup` to keep scratch dirs). The one
+exception is `e2e-features.sh`'s watchdog test, which touches your real
+`~/.pi/agent/watchdog/state.json` (no env-var override exists for that path)
+— it is always saved and restored via a trap, including on failure.
+
+Unlike `e2e-smoke.sh`, `e2e-agents.sh`/`e2e-workflow-prompts.sh`/
+`e2e-run-workflow.sh`/`e2e-features.sh` do **not** fail-fast: every case runs
+and every failure is collected into one final report, so one bad case doesn't
+hide the rest. `e2e-proactive.sh` always exits 0 — see `TESTING-PLAN.md`
+Section D for why.
+
 ## Housekeeping
 
 - `run-unit.sh` / `e2e-smoke.sh` clean up their temp workspaces on exit.

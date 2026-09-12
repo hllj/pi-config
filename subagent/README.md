@@ -259,6 +259,12 @@ in-session second opinion instead of only a post-hoc review.
 - **stopReason "aborted"**: User abort (Ctrl+C) kills subprocess, throws error
 - **Chain mode**: Stops at first failing step, reports which step failed
 
+## Testing
+
+- `tests/run-unit.sh` etc. — offline unit suites, run via `npm test`.
+- `tests/e2e-smoke.sh` — opt-in live smoke test for the run store (single/parallel dispatch, cross-session query, orphan reconcile).
+- `tests/TESTING-PLAN.md` + `tests/e2e-agents.sh` / `e2e-workflow-prompts.sh` / `e2e-run-workflow.sh` / `e2e-features.sh` / `e2e-proactive.sh` — opt-in live E2E covering every packaged agent and every workflow mechanism, invoked by prompt and checked against each agent's documented output contract.
+
 ## Security Model
 
 This tool executes a separate `pi` subprocess with a delegated system prompt and tool/model configuration.
