@@ -496,6 +496,19 @@ const sessionRuns = new Map<string, SubagentRunRecord>();
  */
 let shutdownAbortFlag = false;
 
+/**
+ * Soft, session-wide dispatch ceiling — catches a runaway workflow that keeps
+ * spawning fallback/retry agents without the user noticing token spend
+ * accumulating. Warns once (never blocks); override with
+ * PI_SUBAGENT_SPAWN_CEILING.
+ */
+const SPAWN_CEILING = (() => {
+	const n = Number(process.env.PI_SUBAGENT_SPAWN_CEILING);
+	return Number.isFinite(n) && n > 0 ? n : 50;
+})();
+let totalSpawnCount = 0;
+let spawnCeilingWarned = false;
+
 function generateRunningAgentId(): string {
 	return `sg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -860,6 +873,20 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 		recordStart(runRec, storeDir);
 	} catch {
 		/* ignore */
+	}
+	totalSpawnCount++;
+	if (totalSpawnCount === SPAWN_CEILING + 1 && !spawnCeilingWarned) {
+		spawnCeilingWarned = true;
+		const ceilingMsg = `Subagent spawn ceiling: this session has dispatched ${totalSpawnCount} subagents so far (soft limit ${SPAWN_CEILING}). Advisory only — if a workflow keeps spawning fallback/retry agents, check it isn't runaway. Override with PI_SUBAGENT_SPAWN_CEILING.`;
+		if (opts.pi) {
+			try {
+				opts.pi.sendUserMessage(ceilingMsg, { deliverAs: "steer" });
+			} catch {
+				/* ignore */
+			}
+		} else {
+			console.error(`[subagent] ${ceilingMsg}`);
+		}
 	}
 	if (opts.onSpawn) {
 		try {

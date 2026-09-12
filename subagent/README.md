@@ -148,6 +148,11 @@ Use a chain: first have scout find the session store, then have planner suggest 
 | Chain | `{ chain: [...] }` | Sequential with `{previous}` placeholder |
 | Workflow | `workflow` / `run_workflow` | Steps with conditions, error handlers, approval gates, parallel groups, per-step timeout |
 
+Every mode funnels through the same dispatch point, which tracks a soft session-wide spawn
+ceiling (default 50, override `PI_SUBAGENT_SPAWN_CEILING`): a single advisory steer fires once
+if a session dispatches more subagents than that — catches a runaway workflow spawning
+fallback/retry agents without the user noticing token spend accumulating. Never blocks.
+
 Per-call options on single/parallel/chain items and workflow steps:
 
 - `timeoutMs` — kill the subagent after this many ms

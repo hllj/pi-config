@@ -47,7 +47,7 @@ pi-subagents' "goal missions" pair a token budget with an idle-turn nudge ("here
 
 pi-subagents' FleetView shows per-child token window/spend/duration/activity-freshness live, plus a hard `maxSubagentSpawnsPerRun` (default 64) spawn-budget ceiling separate from the concurrency cap. Our `/runs` is post-hoc audit only (agent/mode/status/duration/turns/cost columns, but not live-updating per-child spend while running) and `runSingleAgent`'s parallel cap (8 tasks, 4 concurrent) has no total-spawns-per-session ceiling.
 
-- [ ] Lower priority — add a session-level spawn counter with a soft ceiling (e.g. 50/session) that warns rather than blocks, to catch a runaway workflow that keeps spawning fallback/retry agents without the user noticing token spend accumulating.
+- [x] Add a session-level spawn counter with a soft ceiling (default 50, `PI_SUBAGENT_SPAWN_CEILING` override) that warns once (never blocks) via `pi.sendUserMessage` (falls back to `console.error` if no `pi` handle is available at that call site). Lives in `runSingleAgent` — the single canonical dispatch point every mode (single/parallel/chain/workflow) funnels through, so it's counted regardless of mode. Not independently unit-tested (would need mocking `child_process.spawn`, disproportionate to this feature's priority) — verified via typecheck + lint + manual code read only.
 - [ ] Skip a full live activity-freshness view for now — `/runs` already covers the audit need; this is polish, not a correctness fix.
 
 ## Priority order
