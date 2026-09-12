@@ -14,61 +14,89 @@
  */
 
 import { uuidv7 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	convertToLlm,
 	serializeConversation,
 } from "@earendil-works/pi-coding-agent";
 
+/**
+ * Notify through `ctx.ui`, tolerating a ctx that has gone stale by the time
+ * this runs. Used only in the outer catch below, where the ctx that got us
+ * there may itself be the thing that's stale — every other `ctx` access in
+ * this handler is covered by the same catch instead of being wrapped
+ * individually.
+ */
+function safeNotify(
+	ctx: ExtensionContext,
+	message: string,
+	type?: "info" | "warning" | "error",
+) {
+	try {
+		ctx.ui.notify(message, type);
+	} catch {
+		/* ctx went stale — nothing left to notify through. */
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_compact", async (event, ctx) => {
-		ctx.ui.notify("Custom compaction extension triggered", "info");
+		// The whole body is one try/catch: this handler awaits a real network
+		// call (the summarization request) before touching `ctx` again, so the
+		// session can move on — a second compaction, a reload, or the process
+		// shutting down after the turn that started this one — before that
+		// happens. Any `ctx` access after that (not just `ctx.ui.notify`, also
+		// `ctx.modelRegistry` and friends) throws once stale ("This extension
+		// ctx is stale after session replacement or reload..."), which would
+		// otherwise crash the whole process over a best-effort summarization.
+		try {
+			ctx.ui.notify("Custom compaction extension triggered", "info");
 
-		const { preparation, branchEntries: _, signal } = event;
-		const {
-			messagesToSummarize,
-			turnPrefixMessages,
-			tokensBefore,
-			firstKeptEntryId,
-			previousSummary,
-		} = preparation;
+			const { preparation, branchEntries: _, signal } = event;
+			const {
+				messagesToSummarize,
+				turnPrefixMessages,
+				tokensBefore,
+				firstKeptEntryId,
+				previousSummary,
+			} = preparation;
 
-		// Use Gemini Flash for summarization (cheaper/faster than most conversation models)
-		const model =
-			ctx.modelRegistry.find("openrouter", "google/gemini-2.5-flash") ??
-			ctx.modelRegistry.find("google", "gemini-2.5-flash");
-		if (!model) {
+			// Use Gemini Flash for summarization (cheaper/faster than most conversation models)
+			const model =
+				ctx.modelRegistry.find("openrouter", "google/gemini-2.5-flash") ??
+				ctx.modelRegistry.find("google", "gemini-2.5-flash");
+			if (!model) {
+				ctx.ui.notify(
+					`Could not find Gemini Flash model, using default compaction`,
+					"warning",
+				);
+				return;
+			}
+
+			// Combine all messages for full summary
+			const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
+
 			ctx.ui.notify(
-				`Could not find Gemini Flash model, using default compaction`,
-				"warning",
+				`Custom compaction: summarizing ${allMessages.length} messages (${tokensBefore.toLocaleString()} tokens) with ${model.id}...`,
+				"info",
 			);
-			return;
-		}
 
-		// Combine all messages for full summary
-		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
+			// Convert messages to readable text format
+			const conversationText = serializeConversation(convertToLlm(allMessages));
 
-		ctx.ui.notify(
-			`Custom compaction: summarizing ${allMessages.length} messages (${tokensBefore.toLocaleString()} tokens) with ${model.id}...`,
-			"info",
-		);
+			// Include previous summary context if available
+			const previousContext = previousSummary
+				? `\n\nPrevious session summary for context:\n${previousSummary}`
+				: "";
 
-		// Convert messages to readable text format
-		const conversationText = serializeConversation(convertToLlm(allMessages));
-
-		// Include previous summary context if available
-		const previousContext = previousSummary
-			? `\n\nPrevious session summary for context:\n${previousSummary}`
-			: "";
-
-		// Build messages that ask for a comprehensive summary
-		const summaryMessages = [
-			{
-				role: "user" as const,
-				content: [
-					{
-						type: "text" as const,
-						text: `You are a conversation summarizer. Create a comprehensive summary of this conversation that captures:${previousContext}
+			// Build messages that ask for a comprehensive summary
+			const summaryMessages = [
+				{
+					role: "user" as const,
+					content: [
+						{
+							type: "text" as const,
+							text: `You are a conversation summarizer. Create a comprehensive summary of this conversation that captures:${previousContext}
 
 1. The main goals and objectives discussed
 2. Key decisions made and their rationale
@@ -84,13 +112,12 @@ Format the summary as structured markdown with clear sections.
 <conversation>
 ${conversationText}
 </conversation>`,
-					},
-				],
-				timestamp: Date.now(),
-			},
-		];
+						},
+					],
+					timestamp: Date.now(),
+				},
+			];
 
-		try {
 			// Pass signal to honor abort requests (e.g., user cancels compaction)
 			const response = await ctx.modelRegistry.complete(
 				model,
@@ -129,7 +156,7 @@ ${conversationText}
 			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Compaction failed: ${message}`, "error");
+			safeNotify(ctx, `Compaction failed: ${message}`, "error");
 			// Fall back to default compaction on error
 			return;
 		}

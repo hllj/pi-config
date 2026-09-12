@@ -121,7 +121,8 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── todo/                    todo-widget.ts, shared with todo.ts
 │
 ├── skills/                  on-demand deep-dive docs
-└── tests/                   root-level unit tests (dev-workflows, verify-guard)
+└── tests/                   root-level unit tests (dev-workflows, verify-guard, trigger-compact)
+    └── e2e-compact.sh       opt-in live E2E for trigger-compact.ts + custom-compact.ts
 ```
 
 Two extension shapes are both auto-discovered: a single `*.ts` file directly in the extensions dir, or a `*/index.ts` inside a subdirectory for a bundled extension with helper modules.
@@ -136,7 +137,7 @@ npm test             # every offline unit suite
 npm run check        # setup + lint + typecheck + test — the definition of done
 ```
 
-`subagent/tests/e2e-smoke.sh` and `subagent/tests/e2e-*.sh` are opt-in, **live** tests — they spawn real `pi` subprocesses against your configured provider (need `~/.pi/agent/auth.json`, cost real tokens, take real wall time). Run them deliberately; they are never part of `npm test`.
+`subagent/tests/e2e-smoke.sh`, `subagent/tests/e2e-*.sh`, and `tests/e2e-compact.sh` are opt-in, **live** tests — they spawn real `pi` subprocesses against your configured provider (need `~/.pi/agent/auth.json`, cost real tokens, take real wall time). Run them deliberately; they are never part of `npm test`.
 
 After editing any extension, run `/reload` inside a live `pi` session to pick it up.
 

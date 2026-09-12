@@ -18,9 +18,10 @@
     "test:todo": "node todo/todo-widget.test.ts",
     "test:dev-workflows": "node tests/dev-workflows.test.ts",
     "test:verify-guard": "node tests/verify-guard.test.ts",
+    "test:trigger-compact": "node tests/trigger-compact.test.ts",
     "test:learning": "node learning/failure-store.test.ts",
     "test:notes": "node session-memory/lib.test.ts",
-    "test": "npm run test:subagent && npm run test:subagent:widget && npm run test:subagent:watchdog && npm run test:subagent:workflow-budget && npm run test:subagent:expect && npm run test:todo && npm run test:dev-workflows && npm run test:verify-guard && npm run test:learning && npm run test:notes",
+    "test": "npm run test:subagent && npm run test:subagent:widget && npm run test:subagent:watchdog && npm run test:subagent:workflow-budget && npm run test:subagent:expect && npm run test:todo && npm run test:dev-workflows && npm run test:verify-guard && npm run test:trigger-compact && npm run test:learning && npm run test:notes",
     "check": "npm run setup && npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {

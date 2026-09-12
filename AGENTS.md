@@ -44,7 +44,7 @@ pi-config/                 (= ~/.pi/agent/extensions)
 │   ├── agents/*.md        subagent definitions (YAML frontmatter: name/description/model/tools)
 │   ├── prompts/*.md       bundled workflows (/implement, /scout-and-plan, /implement-and-review)
 │   └── tests/             unit suites (run-unit.sh, run-widget.sh) + e2e-smoke.sh
-├── tests/                 root-level unit tests (dev-workflows, verify-guard)
+├── tests/                 root-level unit tests (dev-workflows, verify-guard, trigger-compact) + e2e-compact.sh (opt-in live)
 ```
 
 **Two extension shapes** are both valid (Pi auto-discovers both):
@@ -105,8 +105,10 @@ npm run test:subagent:watchdog  # bash subagent/tests/run-watchdog.sh
 npm run test:todo        # node todo/todo-widget.test.ts
 npm run test:learning    # node learning/failure-store.test.ts
 npm run test:verify-guard # node tests/verify-guard.test.ts
+npm run test:trigger-compact # node tests/trigger-compact.test.ts
 npm run test:notes       # node session-memory/lib.test.ts
 npm run check            # setup + lint + typecheck + test  (definition of done for pi-config)
+bash tests/e2e-compact.sh # opt-in LIVE test: real pi subprocesses, not part of npm test (needs ~/.pi/agent/auth.json)
 ```
 
 Pi-side (runtime, not in this repo):
