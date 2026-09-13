@@ -4,28 +4,57 @@ Personal extension pack for the [Pi coding agent](https://github.com/earendil-wo
 
 `~/.pi/agent/extensions` is a symlink to this repo, so everything here is auto-discovered and loaded into every `pi` session. It ships no runtime of its own — pure extension code, executed via `jiti` (TypeScript runs without a build step).
 
+Three more pieces of pi's own discovery — subagent definitions, bundled prompts, and skills — are loaded straight from fixed subdirectories of `~/.pi/agent` (`agents/`, `prompts/`, `skills/`), not from the extensions dir. `npm run setup:agent` symlinks the repo's copies (`subagent/agents/*.md`, `subagent/prompts/*.md`, `skills/*`) into place per-file, so this repo stays the single source of truth instead of drifting from hand-copied duplicates. See [Setup](#setup) below.
+
 > **Security note:** extensions run with full system permissions and can execute arbitrary code. Only load code you trust — treat this repo the way you'd treat anything else that runs unsandboxed on every session.
 
 ## Setup
 
 Requirements: `pi` installed and on `PATH`, Node ≥ 22 (the test runners use Node's built-in TypeScript type-stripping).
 
-Two independent pieces make up a full personal Pi setup: this repo (the extensions) and a global operating manual (`AGENTS.md`). Neither alone is the full picture — extensions add capability, `AGENTS.md` tells the agent when and how to use it.
-
-### 1. Extensions — symlink this repo into place
+### Quick start (one command line)
 
 ```bash
-ln -s /path/to/pi-config ~/.pi/agent/extensions
-cd ~/.pi/agent/extensions
-npm install
-npm run setup      # symlinks node_modules -> the global pi install, for type-checking
+git clone https://github.com/hllj/pi-config.git ~/pi-config && cd ~/pi-config && npm install && npm run setup:all && npm run verify
 ```
 
-Changes take effect after `/reload` inside a running `pi` session.
+That single line: clones the repo, installs dependencies (root + `monitor/`'s own, via `postinstall`), symlinks `~/.pi/agent/{extensions,agents/*,prompts/*,skills/*}` into place, fetches `~/.pi/agent/AGENTS.md` if it isn't already there, symlinks `node_modules` against the global `pi` install for type-checking, and then runs a read-only check confirming all of it worked — including, by default, that **every single extension in the repo actually loads** under the real installed `pi` (see [Development](#development) below for details; it's free, no tokens spent). It's idempotent — safe to run again on an already-set-up machine, or with `npm run verify:live` in place of `verify` on the end to also spawn one real `pi --print` turn as an end-to-end smoke test.
+
+The rest of this section explains what that line does, step by step, and covers the one piece it doesn't touch: the global operating manual.
+
+Two independent pieces make up a full personal Pi setup: this repo (the extensions) and a global operating manual (`AGENTS.md`). Neither alone is the full picture — extensions add capability, `AGENTS.md` tells the agent when and how to use it.
+
+### 1. Extensions, agents, prompts & skills — link this repo into place
+
+```bash
+git clone https://github.com/hllj/pi-config.git /path/to/pi-config   # or wherever you keep it
+cd /path/to/pi-config
+npm install            # root deps + monitor/'s own (ws), via postinstall
+npm run setup:agent    # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing
+npm run setup          # symlinks node_modules -> the global pi install, for type-checking
+```
+
+(`npm run setup:all` runs the last two in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`. It also fetches `~/.pi/agent/AGENTS.md` the first time (see [below](#2-global-operating-manual-piagentagentsmd)) — only if that file doesn't already exist, so a re-run never overwrites your edits.
+
+Then confirm everything is wired correctly:
+
+```bash
+npm run verify              # symlinks + node_modules + every extension loads (isolated, zero tokens)
+npm run verify -- --fast    # skip the per-extension load check — structural checks only, no `pi` subprocesses
+npm run verify:live         # + one real `pi --print` turn to confirm a full completion works end-to-end
+```
+
+The per-extension load check works because `pi` fails extension discovery *before* ever resolving a model or touching the network — so it spawns each extension alone (`pi --no-extensions -e <file>`) against a disposable, auth-less agent dir, and treats the absence of a "Failed to load extension" error as proof it loaded, at no cost. `verify:live` is the only piece that spends real tokens, and it's opt-in.
+
+`monitor/` ships its own `package.json` (it needs the `ws` package, which isn't a root dependency) — `npm install` at the repo root installs it too via a `postinstall` hook, so a plain `npm install` is enough. Without it, `pi` refuses to start at all: it hard-fails extension discovery the moment any one extension can't load, not just that extension.
+
+Changes to extension code take effect after `/reload` inside a running `pi` session. Changes to `subagent/agents/`, `subagent/prompts/`, or `skills/` (adding or removing a file) need `npm run setup:agent` re-run once to (re)create the corresponding symlink, then `/reload`.
 
 ### 2. Global operating manual (`~/.pi/agent/AGENTS.md`)
 
-`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo; my current copy is published as a [gist](https://gist.github.com/hllj/53666c537f54a6769157939d90cb7ceb) for reference.
+`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo (no symlink — unlike agents/prompts/skills, it's meant to be hand-edited after the first copy); my current copy is published as a [gist](https://gist.github.com/hllj/53666c537f54a6769157939d90cb7ceb) for reference.
+
+`npm run setup:agent` fetches it into place automatically — **but only if `~/.pi/agent/AGENTS.md` doesn't already exist**, so it never overwrites local edits. To fetch it manually, or to pull the latest gist revision on top of a file that already exists:
 
 ```bash
 mkdir -p ~/.pi/agent
@@ -34,6 +63,8 @@ curl -fsSL https://gist.githubusercontent.com/hllj/53666c537f54a6769157939d90cb7
 ```
 
 Treat it as a starting point, not a drop-in — it names this repo's own agents and extensions directly (`subagent`, `verify-guard`, `watchdog`, `run_dev_workflow`, ...), so adapt the tool references if your extension set differs. Project-specific conventions (build/test commands, architecture, gotchas) belong in each project's own `AGENTS.md` instead of here — Pi layers them: global → parent directories → the current directory, all concatenated.
+
+`npm run verify` checks that the file exists (not that it matches the gist — local edits are expected).
 
 ## What's here
 
@@ -75,7 +106,7 @@ See `subagent/README.md` for the full feature list, `subagent/IMPROVEMENT-PLAN.m
 - **`bash-tools/`** — `file_sizes`, `run_test`, `capture_output`: context-economical read-decision, targeted-verification, and spill-to-disk helpers.
 - **`web-tools.ts`** — `web_search` / `web_fetch`.
 - **`background-tasks/`** — `task_run`/`task_stop`/`task_status`/`task_wait` + an interactive `/tasks` TUI for long-running processes (dev servers, builds).
-- **`monitor/`** — pattern-watch a command or WebSocket stream (own `package.json` — `ws` dependency).
+- **`monitor/`** — pattern-watch a command or WebSocket stream (own `package.json` — `ws` dependency, installed automatically via the root `postinstall` hook).
 
 ### UX
 
@@ -96,7 +127,9 @@ Loaded on-demand when a task matches their description, not always in context:
 pi-config/                   (= ~/.pi/agent/extensions)
 ├── package.json             setup / typecheck / lint / test / check scripts
 ├── tsconfig.json            ESM, noEmit, strict:false
-├── scripts/setup-links.sh   symlinks node_modules -> the global pi install
+├── scripts/setup-links.sh       symlinks node_modules -> the global pi install
+├── scripts/setup-agent-links.sh symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing
+├── scripts/verify-setup.sh      checks every symlink above + every extension loads (+ optional live smoke test)
 │
 ├── custom-compact.ts        root-level extensions (one file = one module)
 ├── custom-footer.ts
@@ -111,7 +144,7 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── background-tasks/        bundled extensions (index.ts = entry point)
 ├── bash-tools/
 ├── learning/
-├── monitor/                 own package.json (ws dependency)
+├── monitor/                 own package.json (ws dependency, auto-installed via root postinstall)
 ├── plan-mode/
 ├── session-memory/
 ├── subagent/
@@ -130,7 +163,10 @@ Two extension shapes are both auto-discovered: a single `*.ts` file directly in 
 ## Development
 
 ```bash
-npm run setup       # (re)link node_modules -> the global pi install
+npm run setup        # (re)link node_modules -> the global pi install
+npm run setup:agent  # (re)link ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
+npm run setup:all    # both of the above, in order
+npm run verify       # confirm every link is correct + every extension loads (add --live via `npm run verify:live` for a real pi smoke test, or --fast to skip the extension checks)
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint .
 npm test             # every offline unit suite
