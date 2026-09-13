@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # verify-setup.sh — confirm a personal pi-config installation is fully wired:
-# the extensions symlink, the per-file agents/prompts/skills symlinks from
-# setup-agent-links.sh, and the node_modules type-checking symlinks from
-# setup-links.sh. Read-only — never creates or modifies anything.
+# the extensions symlink, the per-file agents/prompts/skills symlinks and the
+# AGENTS.md fetch from setup-agent-links.sh, and the node_modules
+# type-checking symlinks from setup-links.sh. Read-only — never creates or
+# modifies anything.
 #
 # Usage: bash scripts/verify-setup.sh [--live]
 #   --live   also spawn one real, non-interactive `pi --print` turn to confirm
@@ -70,6 +71,14 @@ check_dir_links "$ROOT/subagent/prompts" "$AGENT_DIR/prompts" "prompts"
 
 echo "== skills (skills/ -> $AGENT_DIR/skills) =="
 check_dir_links "$ROOT/skills" "$AGENT_DIR/skills" "skills"
+
+echo "== global operating manual (not repo-managed) =="
+AGENTS_MD="$AGENT_DIR/AGENTS.md"
+if [ -s "$AGENTS_MD" ]; then
+	ok "AGENTS.md present at $AGENTS_MD"
+else
+	bad "$AGENTS_MD missing or empty — run 'npm run setup:agent' to fetch it, or create it yourself"
+fi
 
 echo "== node_modules type-checking symlinks =="
 for pair in \

@@ -24,7 +24,7 @@ npm run setup:agent   # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skil
 npm run setup         # symlinks node_modules -> the global pi install, for type-checking
 ```
 
-(`npm run setup:all` runs both in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`.
+(`npm run setup:all` runs both in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`. It also fetches `~/.pi/agent/AGENTS.md` the first time (see [below](#2-global-operating-manual-piagentagentsmd)) — only if that file doesn't already exist, so a re-run never overwrites your edits.
 
 Then confirm everything is wired correctly:
 
@@ -37,7 +37,9 @@ Changes to extension code take effect after `/reload` inside a running `pi` sess
 
 ### 2. Global operating manual (`~/.pi/agent/AGENTS.md`)
 
-`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo; my current copy is published as a [gist](https://gist.github.com/hllj/53666c537f54a6769157939d90cb7ceb) for reference.
+`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo (no symlink — unlike agents/prompts/skills, it's meant to be hand-edited after the first copy); my current copy is published as a [gist](https://gist.github.com/hllj/53666c537f54a6769157939d90cb7ceb) for reference.
+
+`npm run setup:agent` fetches it into place automatically — **but only if `~/.pi/agent/AGENTS.md` doesn't already exist**, so it never overwrites local edits. To fetch it manually, or to pull the latest gist revision on top of a file that already exists:
 
 ```bash
 mkdir -p ~/.pi/agent
@@ -46,6 +48,8 @@ curl -fsSL https://gist.githubusercontent.com/hllj/53666c537f54a6769157939d90cb7
 ```
 
 Treat it as a starting point, not a drop-in — it names this repo's own agents and extensions directly (`subagent`, `verify-guard`, `watchdog`, `run_dev_workflow`, ...), so adapt the tool references if your extension set differs. Project-specific conventions (build/test commands, architecture, gotchas) belong in each project's own `AGENTS.md` instead of here — Pi layers them: global → parent directories → the current directory, all concatenated.
+
+`npm run verify` checks that the file exists (not that it matches the gist — local edits are expected).
 
 ## What's here
 
@@ -109,7 +113,7 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── package.json             setup / typecheck / lint / test / check scripts
 ├── tsconfig.json            ESM, noEmit, strict:false
 ├── scripts/setup-links.sh       symlinks node_modules -> the global pi install
-├── scripts/setup-agent-links.sh symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
+├── scripts/setup-agent-links.sh symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing
 ├── scripts/verify-setup.sh      checks every symlink above (+ optional live `pi --print` smoke test)
 │
 ├── custom-compact.ts        root-level extensions (one file = one module)
