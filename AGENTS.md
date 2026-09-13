@@ -32,7 +32,7 @@ pi-config/                 (= ~/.pi/agent/extensions)
 ├── questionnaire.ts       root-level extension: `questionnaire` tool (multi-question tabs)
 ├── todo.ts                root-level extension: todo list tools (/todos)
 ├── trigger-compact.ts     root-level extension: /trigger-compact command
-├── verify-guard.ts         root-level extension: verification watchdog — at turn_end, if a turn changed files but ran no verification (run_test / lsp_diagnostics / lens_diagnostics / check command), send one advisory verify steer; persisted /verify-guard toggle (definition-of-done enforcement)
+├── verify-guard.ts         root-level extension: verification watchdog — at turn_end, if a turn changed files but ran no verification (run_test / lsp_diagnostics / lens_diagnostics / check command), send one advisory verify steer; persisted /verify-guard toggle (definition-of-done enforcement). `lens_diagnostics` comes from the `pi-lens` companion package (not part of this repo — `npm run setup:agent` installs it via `pi install npm:pi-lens`)
 ├── web-tools.ts           root-level extension: web_search / web_fetch tools
 │
 ├── background-tasks/      extension (index.ts): task_run/task_stop/task_remove/task_list/task_status/task_wait + interactive /tasks TUI
