@@ -12,19 +12,29 @@ Three more pieces of pi's own discovery — subagent definitions, bundled prompt
 
 Requirements: `pi` installed and on `PATH`, Node ≥ 22 (the test runners use Node's built-in TypeScript type-stripping).
 
+### Quick start (one command line)
+
+```bash
+git clone https://github.com/hllj/pi-config.git ~/pi-config && cd ~/pi-config && npm install && npm run setup:all && npm run verify
+```
+
+That single line: clones the repo, installs dependencies (root + `monitor/`'s own, via `postinstall`), symlinks `~/.pi/agent/{extensions,agents/*,prompts/*,skills/*}` into place, fetches `~/.pi/agent/AGENTS.md` if it isn't already there, symlinks `node_modules` against the global `pi` install for type-checking, and then runs a read-only check confirming all of it worked. It's idempotent — safe to run again on an already-set-up machine, or with `npm run verify:live` in place of `verify` on the end to also spawn one real `pi --print` turn as an end-to-end smoke test.
+
+The rest of this section explains what that line does, step by step, and covers the one piece it doesn't touch: the global operating manual.
+
 Two independent pieces make up a full personal Pi setup: this repo (the extensions) and a global operating manual (`AGENTS.md`). Neither alone is the full picture — extensions add capability, `AGENTS.md` tells the agent when and how to use it.
 
 ### 1. Extensions, agents, prompts & skills — link this repo into place
 
 ```bash
-git clone <this-repo> /path/to/pi-config   # or wherever you keep it
+git clone https://github.com/hllj/pi-config.git /path/to/pi-config   # or wherever you keep it
 cd /path/to/pi-config
-npm install
-npm run setup:agent   # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
-npm run setup         # symlinks node_modules -> the global pi install, for type-checking
+npm install            # root deps + monitor/'s own (ws), via postinstall
+npm run setup:agent    # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing
+npm run setup          # symlinks node_modules -> the global pi install, for type-checking
 ```
 
-(`npm run setup:all` runs both in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`. It also fetches `~/.pi/agent/AGENTS.md` the first time (see [below](#2-global-operating-manual-piagentagentsmd)) — only if that file doesn't already exist, so a re-run never overwrites your edits.
+(`npm run setup:all` runs the last two in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`. It also fetches `~/.pi/agent/AGENTS.md` the first time (see [below](#2-global-operating-manual-piagentagentsmd)) — only if that file doesn't already exist, so a re-run never overwrites your edits.
 
 Then confirm everything is wired correctly:
 
@@ -32,6 +42,8 @@ Then confirm everything is wired correctly:
 npm run verify         # structural checks: symlinks + node_modules, no network/tokens
 npm run verify:live    # + one real `pi --print` turn to confirm the extension pack loads end-to-end
 ```
+
+`monitor/` ships its own `package.json` (it needs the `ws` package, which isn't a root dependency) — `npm install` at the repo root installs it too via a `postinstall` hook, so a plain `npm install` is enough. Without it, `pi` refuses to start at all: it hard-fails extension discovery the moment any one extension can't load, not just that extension.
 
 Changes to extension code take effect after `/reload` inside a running `pi` session. Changes to `subagent/agents/`, `subagent/prompts/`, or `skills/` (adding or removing a file) need `npm run setup:agent` re-run once to (re)create the corresponding symlink, then `/reload`.
 
@@ -91,7 +103,7 @@ See `subagent/README.md` for the full feature list, `subagent/IMPROVEMENT-PLAN.m
 - **`bash-tools/`** — `file_sizes`, `run_test`, `capture_output`: context-economical read-decision, targeted-verification, and spill-to-disk helpers.
 - **`web-tools.ts`** — `web_search` / `web_fetch`.
 - **`background-tasks/`** — `task_run`/`task_stop`/`task_status`/`task_wait` + an interactive `/tasks` TUI for long-running processes (dev servers, builds).
-- **`monitor/`** — pattern-watch a command or WebSocket stream (own `package.json` — `ws` dependency).
+- **`monitor/`** — pattern-watch a command or WebSocket stream (own `package.json` — `ws` dependency, installed automatically via the root `postinstall` hook).
 
 ### UX
 
@@ -129,7 +141,7 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── background-tasks/        bundled extensions (index.ts = entry point)
 ├── bash-tools/
 ├── learning/
-├── monitor/                 own package.json (ws dependency)
+├── monitor/                 own package.json (ws dependency, auto-installed via root postinstall)
 ├── plan-mode/
 ├── session-memory/
 ├── subagent/

@@ -5,6 +5,7 @@
   "description": "Personal pi coding agent extensions, agents, and prompts",
   "type": "module",
   "scripts": {
+    "postinstall": "npm install --prefix monitor --no-audit --no-fund",
     "setup": "bash scripts/setup-links.sh",
     "setup:agent": "bash scripts/setup-agent-links.sh",
     "setup:all": "npm run setup:agent && npm run setup",
