@@ -6,6 +6,10 @@
   "type": "module",
   "scripts": {
     "setup": "bash scripts/setup-links.sh",
+    "setup:agent": "bash scripts/setup-agent-links.sh",
+    "setup:all": "npm run setup:agent && npm run setup",
+    "verify": "bash scripts/verify-setup.sh",
+    "verify:live": "bash scripts/verify-setup.sh --live",
     "pretypecheck": "npm run setup",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

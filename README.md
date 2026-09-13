@@ -4,6 +4,8 @@ Personal extension pack for the [Pi coding agent](https://github.com/earendil-wo
 
 `~/.pi/agent/extensions` is a symlink to this repo, so everything here is auto-discovered and loaded into every `pi` session. It ships no runtime of its own — pure extension code, executed via `jiti` (TypeScript runs without a build step).
 
+Three more pieces of pi's own discovery — subagent definitions, bundled prompts, and skills — are loaded straight from fixed subdirectories of `~/.pi/agent` (`agents/`, `prompts/`, `skills/`), not from the extensions dir. `npm run setup:agent` symlinks the repo's copies (`subagent/agents/*.md`, `subagent/prompts/*.md`, `skills/*`) into place per-file, so this repo stays the single source of truth instead of drifting from hand-copied duplicates. See [Setup](#setup) below.
+
 > **Security note:** extensions run with full system permissions and can execute arbitrary code. Only load code you trust — treat this repo the way you'd treat anything else that runs unsandboxed on every session.
 
 ## Setup
@@ -12,16 +14,26 @@ Requirements: `pi` installed and on `PATH`, Node ≥ 22 (the test runners use No
 
 Two independent pieces make up a full personal Pi setup: this repo (the extensions) and a global operating manual (`AGENTS.md`). Neither alone is the full picture — extensions add capability, `AGENTS.md` tells the agent when and how to use it.
 
-### 1. Extensions — symlink this repo into place
+### 1. Extensions, agents, prompts & skills — link this repo into place
 
 ```bash
-ln -s /path/to/pi-config ~/.pi/agent/extensions
-cd ~/.pi/agent/extensions
+git clone <this-repo> /path/to/pi-config   # or wherever you keep it
+cd /path/to/pi-config
 npm install
-npm run setup      # symlinks node_modules -> the global pi install, for type-checking
+npm run setup:agent   # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
+npm run setup         # symlinks node_modules -> the global pi install, for type-checking
 ```
 
-Changes take effect after `/reload` inside a running `pi` session.
+(`npm run setup:all` runs both in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`.
+
+Then confirm everything is wired correctly:
+
+```bash
+npm run verify         # structural checks: symlinks + node_modules, no network/tokens
+npm run verify:live    # + one real `pi --print` turn to confirm the extension pack loads end-to-end
+```
+
+Changes to extension code take effect after `/reload` inside a running `pi` session. Changes to `subagent/agents/`, `subagent/prompts/`, or `skills/` (adding or removing a file) need `npm run setup:agent` re-run once to (re)create the corresponding symlink, then `/reload`.
 
 ### 2. Global operating manual (`~/.pi/agent/AGENTS.md`)
 
@@ -96,7 +108,9 @@ Loaded on-demand when a task matches their description, not always in context:
 pi-config/                   (= ~/.pi/agent/extensions)
 ├── package.json             setup / typecheck / lint / test / check scripts
 ├── tsconfig.json            ESM, noEmit, strict:false
-├── scripts/setup-links.sh   symlinks node_modules -> the global pi install
+├── scripts/setup-links.sh       symlinks node_modules -> the global pi install
+├── scripts/setup-agent-links.sh symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
+├── scripts/verify-setup.sh      checks every symlink above (+ optional live `pi --print` smoke test)
 │
 ├── custom-compact.ts        root-level extensions (one file = one module)
 ├── custom-footer.ts
@@ -130,7 +144,10 @@ Two extension shapes are both auto-discovered: a single `*.ts` file directly in 
 ## Development
 
 ```bash
-npm run setup       # (re)link node_modules -> the global pi install
+npm run setup        # (re)link node_modules -> the global pi install
+npm run setup:agent  # (re)link ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
+npm run setup:all    # both of the above, in order
+npm run verify       # confirm every link above is correct (add --live via `npm run verify:live` for a real pi smoke test)
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint .
 npm test             # every offline unit suite
