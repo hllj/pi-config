@@ -128,10 +128,16 @@ if [ "$FAST" -ne 1 ]; then
 	# The two shapes pi auto-discovers: a root-level *.ts file, or a */index.ts
 	# bundled extension one directory down. Discovered dynamically (not a
 	# hardcoded list) so this stays correct as extensions are added or removed.
+	#
+	# Exclusions are anchored to $ROOT (not a bare */.../* wildcard): ROOT itself
+	# may live under a path containing "node_modules", ".git", or ".claude" as a
+	# path segment (e.g. a checkout inside a .claude/worktrees/ directory) —
+	# an unanchored pattern would match that ancestor segment and silently
+	# exclude every bundled extension instead of just ROOT's own such dirs.
 	list_extensions() {
 		find "$ROOT" -maxdepth 1 -type f -iname "*.ts"
 		find "$ROOT" -mindepth 2 -maxdepth 2 -type f -iname "index.ts" \
-			-not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.claude/*"
+			-not -path "$ROOT/node_modules/*" -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*"
 	}
 
 	while IFS= read -r ext; do
@@ -149,14 +155,8 @@ fi
 
 if [ "$LIVE" -eq 1 ]; then
 	echo "== live pi smoke test (full pack, real completion) =="
-	# A throwaway --session-id, not --no-session: session-memory's session_shutdown
-	# hook currently throws on --no-session's ephemeral session teardown (a real,
-	# separate bug — see the extension's own issue tracker, not a setup problem).
-	# A real, persisted session exercises the same "does a full turn complete"
-	# property without tripping that unrelated edge case. Deleted below either way.
-	LIVE_SESSION_ID="pi-config-verify-$$-$(date +%s)"
-	OUT="$(cd "$ROOT" && pi --print --session-id "$LIVE_SESSION_ID" "Reply with exactly: PI_CONFIG_OK" 2>&1)" || true
-	find "$AGENT_DIR/sessions" -type f -iname "*$LIVE_SESSION_ID*" -exec rm -f {} + 2>/dev/null || true
+	# --no-session: ephemeral, leaves no session file to clean up afterward.
+	OUT="$(cd "$ROOT" && pi --print --no-session "Reply with exactly: PI_CONFIG_OK" 2>&1)" || true
 	if echo "$OUT" | grep -q "PI_CONFIG_OK"; then
 		ok "pi --print completed and loaded the extension pack without error"
 	else

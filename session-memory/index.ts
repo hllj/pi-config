@@ -323,7 +323,14 @@ export default function (pi: ExtensionAPI) {
 		// queue a follow-up that nudges the agent to refresh ALL sections via the
 		// note tool. Bounded by the countdown (persisted) so the refresh turn
 		// itself cannot re-trigger immediately.
-		if (autoRefreshEnabled) {
+		//
+		// Skipped in print mode: `pi --print` is single-turn and tears the
+		// runtime down as soon as the first turn settles, racing the queued
+		// follow-up turn's own event handlers against that teardown — they'd
+		// run against an already-invalidated ctx ("ctx is stale after session
+		// replacement or reload"). Interactive/RPC/JSON modes keep running, so
+		// the follow-up has a session to land in.
+		if (autoRefreshEnabled && ctx.mode !== "print") {
 			const step = autoRefreshStep(autoRefreshPending, autoRefreshEvery);
 			autoRefreshPending = step.pending;
 			if (step.fire) {
