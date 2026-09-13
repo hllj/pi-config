@@ -376,16 +376,29 @@ async function writePromptToTempFile(
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
+	// The self-re-exec heuristics below (re-run process.argv[1], or trust
+	// process.execPath directly) only make sense when the *current* process is
+	// itself the real `pi` CLI - re-executing some other host's entrypoint
+	// script with pi-CLI-style args (--print, --no-session, ...) crashes that
+	// host's own arg parser instead of spawning a subagent. `pi`'s CLI and RPC
+	// entrypoints (dist/cli/setup.ts, dist/rpc-entry.ts) both set
+	// PI_CODING_AGENT=true before anything else runs; createAgentSession()
+	// called directly from a foreign host (e.g. pi-bench's own CLI) never sets
+	// it. Gate the self-re-exec heuristics on that marker instead of assuming
+	// any real-file argv[1] is safe to re-invoke.
+	const isRealPiCli = process.env.PI_CODING_AGENT === "true";
+	if (isRealPiCli) {
+		const currentScript = process.argv[1];
+		const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+		if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+			return { command: process.execPath, args: [currentScript, ...args] };
+		}
 
-	const execName = path.basename(process.execPath).toLowerCase();
-	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) {
-		return { command: process.execPath, args };
+		const execName = path.basename(process.execPath).toLowerCase();
+		const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+		if (!isGenericRuntime) {
+			return { command: process.execPath, args };
+		}
 	}
 
 	return { command: "pi", args };
