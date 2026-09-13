@@ -2,20 +2,45 @@
 #
 # verify-setup.sh — confirm a personal pi-config installation is fully wired:
 # the extensions symlink, the per-file agents/prompts/skills symlinks and the
-# AGENTS.md fetch from setup-agent-links.sh, and the node_modules
-# type-checking symlinks from setup-links.sh. Read-only — never creates or
-# modifies anything.
+# AGENTS.md fetch from setup-agent-links.sh, the node_modules type-checking
+# symlinks from setup-links.sh, and — by default — that every single extension
+# in the repo actually loads under the real, installed `pi`. Read-only — never
+# creates or modifies anything in the repo or in $AGENT_DIR.
 #
-# Usage: bash scripts/verify-setup.sh [--live]
-#   --live   also spawn one real, non-interactive `pi --print` turn to confirm
-#            the extension pack loads cleanly end-to-end. Costs a small amount
-#            of real tokens against your configured provider, so it's opt-in.
+# Usage: bash scripts/verify-setup.sh [--fast] [--live]
+#   --fast   skip the per-extension load check (structural checks only; fast,
+#            no `pi` subprocesses spawned).
+#   --live   also spawn one real, non-interactive `pi --print` turn against
+#            the full pack (not isolated) to confirm an actual model turn
+#            completes end-to-end. Costs a small amount of real tokens
+#            against your configured provider, so it's opt-in.
+#
+# The per-extension load check (default, not --fast) is free: it spawns each
+# extension alone (`pi --no-extensions -e <file>`) against a disposable,
+# auth-less agent dir. pi fails extension discovery *before* ever resolving a
+# model or making a network call, so "no 'Failed to load extension' error" is
+# a reliable, zero-cost, zero-token signal that the extension loaded — every
+# run here reliably stops at "No API key found" instead, never at a real
+# completion.
 #
 set -uo pipefail
 
 cd "$(dirname "$0")/.." # repo root
 ROOT="$(pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+
+FAST=0
+LIVE=0
+for arg in "$@"; do
+	case "$arg" in
+	--fast) FAST=1 ;;
+	--live) LIVE=1 ;;
+	*)
+		echo "verify-setup.sh: unknown argument: $arg" >&2
+		exit 2
+		;;
+	esac
+done
 
 PASS=0
 FAIL=0
@@ -95,9 +120,43 @@ for pair in \
 	fi
 done
 
-if [ "${1:-}" = "--live" ]; then
-	echo "== live pi smoke test =="
-	OUT="$(cd "$ROOT" && pi --print --no-session "Reply with exactly: PI_CONFIG_OK" 2>&1)" || true
+if [ "$FAST" -ne 1 ]; then
+	echo "== every extension loads (isolated, no auth/tokens needed) =="
+	SCRATCH_AGENT_DIR="$(mktemp -d)"
+	trap 'rm -rf "$SCRATCH_AGENT_DIR"' EXIT
+
+	# The two shapes pi auto-discovers: a root-level *.ts file, or a */index.ts
+	# bundled extension one directory down. Discovered dynamically (not a
+	# hardcoded list) so this stays correct as extensions are added or removed.
+	list_extensions() {
+		find "$ROOT" -maxdepth 1 -type f -iname "*.ts"
+		find "$ROOT" -mindepth 2 -maxdepth 2 -type f -iname "index.ts" \
+			-not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.claude/*"
+	}
+
+	while IFS= read -r ext; do
+		[ -n "$ext" ] || continue
+		rel="${ext#"$ROOT"/}"
+		OUT="$(PI_CODING_AGENT_DIR="$SCRATCH_AGENT_DIR" pi --no-extensions -e "$ext" --print --no-session "hi" </dev/null 2>&1)"
+		if echo "$OUT" | grep -q "Failed to load extension"; then
+			REASON="$(echo "$OUT" | grep "Failed to load extension" | head -1 | sed -E 's/\x1b\[[0-9;]*m//g')"
+			bad "$rel — $REASON"
+		else
+			ok "$rel"
+		fi
+	done < <(list_extensions | sort)
+fi
+
+if [ "$LIVE" -eq 1 ]; then
+	echo "== live pi smoke test (full pack, real completion) =="
+	# A throwaway --session-id, not --no-session: session-memory's session_shutdown
+	# hook currently throws on --no-session's ephemeral session teardown (a real,
+	# separate bug — see the extension's own issue tracker, not a setup problem).
+	# A real, persisted session exercises the same "does a full turn complete"
+	# property without tripping that unrelated edge case. Deleted below either way.
+	LIVE_SESSION_ID="pi-config-verify-$$-$(date +%s)"
+	OUT="$(cd "$ROOT" && pi --print --session-id "$LIVE_SESSION_ID" "Reply with exactly: PI_CONFIG_OK" 2>&1)" || true
+	find "$AGENT_DIR/sessions" -type f -iname "*$LIVE_SESSION_ID*" -exec rm -f {} + 2>/dev/null || true
 	if echo "$OUT" | grep -q "PI_CONFIG_OK"; then
 		ok "pi --print completed and loaded the extension pack without error"
 	else

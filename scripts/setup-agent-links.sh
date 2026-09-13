@@ -26,6 +26,14 @@
 # warning instead of being clobbered (e.g. a personal, non-repo agent file
 # living alongside the repo's own).
 #
+# NOT safe to run from a second checkout of this same repo while $AGENT_DIR
+# is already wired to a different one (another clone, a worktree, a stale
+# path) — so this script refuses outright rather than guessing. Without that
+# guard, the per-file agents/prompts/skills symlinks (which have no natural
+# "does this belong to the same checkout as extensions?" check of their own)
+# would silently get repointed at whichever checkout happened to run last,
+# corrupting the canonical one.
+#
 set -euo pipefail
 
 cd "$(dirname "$0")/.." # repo root
@@ -40,11 +48,19 @@ warn() { echo "  warning: $*" >&2; }
 mkdir -p "$AGENT_DIR"
 
 # --- extensions dir: whole-repo symlink -------------------------------------
+# Everything after this point assumes $AGENT_DIR belongs to *this* checkout
+# ($ROOT). If extensions already points somewhere else, stop here instead of
+# proceeding to repoint the shared per-file agents/prompts/skills symlinks at
+# the wrong checkout.
 EXT_LINK="$AGENT_DIR/extensions"
 if [ -L "$EXT_LINK" ] && [ "$(readlink "$EXT_LINK")" = "$ROOT" ]; then
 	info "extensions -> $ROOT (already linked)"
 elif [ -e "$EXT_LINK" ]; then
-	warn "$EXT_LINK exists and isn't a symlink to $ROOT — leaving it alone (remove it and re-run to let pi-config own it)"
+	echo "error: $EXT_LINK exists and does not point at $ROOT (got: $(readlink "$EXT_LINK" 2>/dev/null || echo '<not a symlink>'))." >&2
+	echo "       Refusing to touch agents/prompts/skills too — this agent dir looks like it belongs" >&2
+	echo "       to a different pi-config checkout. Remove $EXT_LINK first if $ROOT should own it," >&2
+	echo "       or re-run this script from the checkout it already points at." >&2
+	exit 1
 else
 	ln -s "$ROOT" "$EXT_LINK"
 	info "extensions -> $ROOT (linked)"

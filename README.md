@@ -18,7 +18,7 @@ Requirements: `pi` installed and on `PATH`, Node ≥ 22 (the test runners use No
 git clone https://github.com/hllj/pi-config.git ~/pi-config && cd ~/pi-config && npm install && npm run setup:all && npm run verify
 ```
 
-That single line: clones the repo, installs dependencies (root + `monitor/`'s own, via `postinstall`), symlinks `~/.pi/agent/{extensions,agents/*,prompts/*,skills/*}` into place, fetches `~/.pi/agent/AGENTS.md` if it isn't already there, symlinks `node_modules` against the global `pi` install for type-checking, and then runs a read-only check confirming all of it worked. It's idempotent — safe to run again on an already-set-up machine, or with `npm run verify:live` in place of `verify` on the end to also spawn one real `pi --print` turn as an end-to-end smoke test.
+That single line: clones the repo, installs dependencies (root + `monitor/`'s own, via `postinstall`), symlinks `~/.pi/agent/{extensions,agents/*,prompts/*,skills/*}` into place, fetches `~/.pi/agent/AGENTS.md` if it isn't already there, symlinks `node_modules` against the global `pi` install for type-checking, and then runs a read-only check confirming all of it worked — including, by default, that **every single extension in the repo actually loads** under the real installed `pi` (see [Development](#development) below for details; it's free, no tokens spent). It's idempotent — safe to run again on an already-set-up machine, or with `npm run verify:live` in place of `verify` on the end to also spawn one real `pi --print` turn as an end-to-end smoke test.
 
 The rest of this section explains what that line does, step by step, and covers the one piece it doesn't touch: the global operating manual.
 
@@ -39,9 +39,12 @@ npm run setup          # symlinks node_modules -> the global pi install, for typ
 Then confirm everything is wired correctly:
 
 ```bash
-npm run verify         # structural checks: symlinks + node_modules, no network/tokens
-npm run verify:live    # + one real `pi --print` turn to confirm the extension pack loads end-to-end
+npm run verify              # symlinks + node_modules + every extension loads (isolated, zero tokens)
+npm run verify -- --fast    # skip the per-extension load check — structural checks only, no `pi` subprocesses
+npm run verify:live         # + one real `pi --print` turn to confirm a full completion works end-to-end
 ```
+
+The per-extension load check works because `pi` fails extension discovery *before* ever resolving a model or touching the network — so it spawns each extension alone (`pi --no-extensions -e <file>`) against a disposable, auth-less agent dir, and treats the absence of a "Failed to load extension" error as proof it loaded, at no cost. `verify:live` is the only piece that spends real tokens, and it's opt-in.
 
 `monitor/` ships its own `package.json` (it needs the `ws` package, which isn't a root dependency) — `npm install` at the repo root installs it too via a `postinstall` hook, so a plain `npm install` is enough. Without it, `pi` refuses to start at all: it hard-fails extension discovery the moment any one extension can't load, not just that extension.
 
@@ -126,7 +129,7 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── tsconfig.json            ESM, noEmit, strict:false
 ├── scripts/setup-links.sh       symlinks node_modules -> the global pi install
 ├── scripts/setup-agent-links.sh symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing
-├── scripts/verify-setup.sh      checks every symlink above (+ optional live `pi --print` smoke test)
+├── scripts/verify-setup.sh      checks every symlink above + every extension loads (+ optional live smoke test)
 │
 ├── custom-compact.ts        root-level extensions (one file = one module)
 ├── custom-footer.ts
@@ -163,7 +166,7 @@ Two extension shapes are both auto-discovered: a single `*.ts` file directly in 
 npm run setup        # (re)link node_modules -> the global pi install
 npm run setup:agent  # (re)link ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo
 npm run setup:all    # both of the above, in order
-npm run verify       # confirm every link above is correct (add --live via `npm run verify:live` for a real pi smoke test)
+npm run verify       # confirm every link is correct + every extension loads (add --live via `npm run verify:live` for a real pi smoke test, or --fast to skip the extension checks)
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint .
 npm test             # every offline unit suite
