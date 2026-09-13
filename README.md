@@ -30,16 +30,18 @@ Two independent pieces make up a full personal Pi setup: this repo (the extensio
 git clone https://github.com/hllj/pi-config.git /path/to/pi-config   # or wherever you keep it
 cd /path/to/pi-config
 npm install            # root deps + monitor/'s own (ws), via postinstall
-npm run setup:agent    # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing
+npm run setup:agent    # symlinks ~/.pi/agent/{extensions,agents/*,prompts/*,skills/*} -> this repo, fetches AGENTS.md if missing, installs the pi-lens companion package
 npm run setup          # symlinks node_modules -> the global pi install, for type-checking
 ```
 
 (`npm run setup:all` runs the last two in order.) `setup:agent` is idempotent and safe to re-run any time — it only creates or replaces symlinks it owns, and leaves any unrelated file at those paths (e.g. a personal, non-repo agent definition) untouched with a warning. It reads `PI_CODING_AGENT_DIR` if set, otherwise defaults to `~/.pi/agent`. It also fetches `~/.pi/agent/AGENTS.md` the first time (see [below](#2-global-operating-manual-piagentagentsmd)) — only if that file doesn't already exist, so a re-run never overwrites your edits.
 
+It also installs [`pi-lens`](https://www.npmjs.com/package/pi-lens) — a separate `pi` package (not part of this repo) providing real-time LSP/lint/type-check diagnostics via `pi install npm:pi-lens`. `verify-guard.ts` recognizes its `lens_diagnostics` tool as a verification signal (alongside `run_test`/`lsp_diagnostics`). `pi install` is pi's own package manager: it merges into `~/.pi/agent/settings.json`'s `packages` list without touching anything else there, and no-ops if `pi-lens` is already installed — so this step is safe to re-run too.
+
 Then confirm everything is wired correctly:
 
 ```bash
-npm run verify              # symlinks + node_modules + every extension loads (isolated, zero tokens)
+npm run verify              # symlinks + pi-lens + node_modules + every extension loads (isolated, zero tokens)
 npm run verify -- --fast    # skip the per-extension load check — structural checks only, no `pi` subprocesses
 npm run verify:live         # + one real `pi --print` turn to confirm a full completion works end-to-end
 ```
@@ -92,7 +94,7 @@ See `subagent/README.md` for the full feature list, `subagent/IMPROVEMENT-PLAN.m
 ### Dev loop
 
 - **`dev-workflows.ts`** — preset multi-agent pipelines (`swat`/`bugfix`/`refactor`/`explore`) launched with one call via `run_dev_workflow` or `/dev <type> <topic>`; `/dev-auto` (opt-in) adds event-driven nudges toward using it.
-- **`verify-guard.ts`** — advisory nudge (opt-in, `/verify-guard`) when a turn edits files but runs no verification (`run_test`/`lsp_diagnostics`/`lens_diagnostics`/a check command).
+- **`verify-guard.ts`** — advisory nudge (opt-in, `/verify-guard`) when a turn edits files but runs no verification (`run_test`/`lsp_diagnostics`/`lens_diagnostics`/a check command). `lens_diagnostics` comes from the [`pi-lens`](https://www.npmjs.com/package/pi-lens) companion package, installed by `npm run setup:agent` (see [Setup](#setup)).
 - **`plan-mode/`** — `/plan`, `/plan-todos`, Ctrl+Alt+P: plan-then-code mode.
 - **`learning/`** — captures and fingerprints tool/subagent failures across sessions; `/learn` promotes patterns that repeat across ≥2 sessions into drafted skills.
 

@@ -10,6 +10,7 @@
 #   ~/.pi/agent/prompts/*.md -> subagent/prompts/*.md    (per-file symlinks)
 #   ~/.pi/agent/skills/*     -> skills/*                 (per-dir symlinks)
 #   ~/.pi/agent/AGENTS.md    -> fetched once from the operating-manual gist
+#   npm:pi-lens              -> installed via `pi install` (settings.json)
 #
 # Without the middle three, pi's agent/prompt-template/skill loaders (which
 # read straight from <agent dir>/{agents,prompts,skills}, never from the
@@ -109,6 +110,22 @@ elif curl -fsSL "$AGENTS_MD_GIST_URL" -o "$AGENTS_MD" 2>/dev/null; then
 else
 	rm -f "$AGENTS_MD" # remove a possible empty file left by a failed curl
 	warn "could not fetch AGENTS.md from $AGENTS_MD_GIST_URL (offline?) — create $AGENTS_MD yourself when ready"
+fi
+
+# --- companion package: pi-lens ---------------------------------------------
+# Not part of this repo — a separate `pi` package (LSP/lint/type-check
+# diagnostics) that verify-guard.ts optionally recognizes: a `lens_diagnostics`
+# tool call counts as verification alongside run_test/lsp_diagnostics. `pi
+# install` is pi's own package manager — idempotent (no-ops once installed)
+# and merges into settings.json without touching any other field, so it's
+# safe to call unconditionally rather than hand-editing JSON ourselves.
+PI_LENS_PKG="npm:pi-lens"
+if PI_CODING_AGENT_DIR="$AGENT_DIR" pi list 2>/dev/null | grep -q "$PI_LENS_PKG"; then
+	info "$PI_LENS_PKG already installed"
+elif PI_CODING_AGENT_DIR="$AGENT_DIR" pi install "$PI_LENS_PKG" >/dev/null 2>&1; then
+	info "$PI_LENS_PKG installed"
+else
+	warn "could not install $PI_LENS_PKG (offline?) — run 'pi install $PI_LENS_PKG' yourself when ready"
 fi
 
 echo "Done. Run 'npm run verify' to confirm the full setup."

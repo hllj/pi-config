@@ -2,10 +2,11 @@
 #
 # verify-setup.sh — confirm a personal pi-config installation is fully wired:
 # the extensions symlink, the per-file agents/prompts/skills symlinks and the
-# AGENTS.md fetch from setup-agent-links.sh, the node_modules type-checking
-# symlinks from setup-links.sh, and — by default — that every single extension
-# in the repo actually loads under the real, installed `pi`. Read-only — never
-# creates or modifies anything in the repo or in $AGENT_DIR.
+# AGENTS.md fetch and pi-lens package install from setup-agent-links.sh, the
+# node_modules type-checking symlinks from setup-links.sh, and — by default —
+# that every single extension in the repo actually loads under the real,
+# installed `pi`. Read-only — never creates or modifies anything in the repo
+# or in $AGENT_DIR.
 #
 # Usage: bash scripts/verify-setup.sh [--fast] [--live]
 #   --fast   skip the per-extension load check (structural checks only; fast,
@@ -103,6 +104,13 @@ if [ -s "$AGENTS_MD" ]; then
 	ok "AGENTS.md present at $AGENTS_MD"
 else
 	bad "$AGENTS_MD missing or empty — run 'npm run setup:agent' to fetch it, or create it yourself"
+fi
+
+echo "== companion package (npm:pi-lens, via 'pi list') =="
+if PI_CODING_AGENT_DIR="$AGENT_DIR" pi list 2>/dev/null | grep -q "npm:pi-lens"; then
+	ok "npm:pi-lens installed"
+else
+	bad "npm:pi-lens not installed — run 'npm run setup:agent' or 'pi install npm:pi-lens'"
 fi
 
 echo "== node_modules type-checking symlinks =="
