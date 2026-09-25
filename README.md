@@ -54,13 +54,13 @@ Changes to extension code take effect after `/reload` inside a running `pi` sess
 
 ### 2. Global operating manual (`~/.pi/agent/AGENTS.md`)
 
-`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo (no symlink — unlike agents/prompts/skills, it's meant to be hand-edited after the first copy); my current copy is published as a [gist](https://gist.github.com/hllj/53666c537f54a6769157939d90cb7ceb) for reference.
+`~/.pi/agent/AGENTS.md` is loaded into **every** `pi` session, regardless of project — it's where the agent's always-on rules live: who it is, the engineering loop (plan → test → implement → review → verify → remember → improve), tool-selection heuristics, and the definition of done. It's personal and machine-specific, not code, so it isn't part of this repo (no symlink — unlike agents/prompts/skills, it's meant to be hand-edited after the first copy); my current copy (v3.1) is published as a [gist](https://gist.github.com/hllj/d716e5e0aa34d4971cef7fa459b2cffc) for reference. v3.1 adds a "Before your first code change" checklist at the top, which pairs with `start-of-task-gate.ts`.
 
 `npm run setup:agent` fetches it into place automatically — **but only if `~/.pi/agent/AGENTS.md` doesn't already exist**, so it never overwrites local edits. To fetch it manually, or to pull the latest gist revision on top of a file that already exists:
 
 ```bash
 mkdir -p ~/.pi/agent
-curl -fsSL https://gist.githubusercontent.com/hllj/53666c537f54a6769157939d90cb7ceb/raw/AGENTS.md \
+curl -fsSL https://gist.githubusercontent.com/hllj/d716e5e0aa34d4971cef7fa459b2cffc/raw/AGENTS.md \
   -o ~/.pi/agent/AGENTS.md
 ```
 

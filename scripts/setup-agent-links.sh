@@ -41,7 +41,7 @@ cd "$(dirname "$0")/.." # repo root
 ROOT="$(pwd)"
 
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-AGENTS_MD_GIST_URL="${PI_AGENTS_MD_GIST_URL:-https://gist.githubusercontent.com/hllj/53666c537f54a6769157939d90cb7ceb/raw/AGENTS.md}"
+AGENTS_MD_GIST_URL="${PI_AGENTS_MD_GIST_URL:-https://gist.githubusercontent.com/hllj/d716e5e0aa34d4971cef7fa459b2cffc/raw/AGENTS.md}"
 
 info() { echo "  $*"; }
 warn() { echo "  warning: $*" >&2; }
