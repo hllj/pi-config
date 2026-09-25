@@ -53,7 +53,7 @@ are separate required parameters. The `/dev` command does the splitting for huma
 
 - Inspect/resume any step: `get_workflow` then `resume_workflow` (`fromStep` to jump in).
 - The final output is the last completed step's output; use `expect` contracts (planner emits `{plan, files, risks}` JSON) to gate downstream steps.
-- Review every changed file (the `verify`/`reviewer` steps do this, but confirm `lsp_diagnostics` is clean on return).
+- Review every changed file (the `verify`/`reviewer` steps do this, but confirm `lens_diagnostics` is clean on return).
 
 ## Automatic nudges (`/dev-auto`)
 

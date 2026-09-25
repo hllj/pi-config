@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Code review specialist leveraging pi-lens diagnostics, project analysis, and AST searches for quality and security analysis
-tools: read, grep, find, ls, bash, lsp_diagnostics, lens_diagnostics, project_report, module_report, symbol_search, read_enclosing, ast_grep_search, pi_lens_activate_tools
+tools: read, grep, find, ls, bash, lens_diagnostics, project_report, module_report, symbol_search, read_enclosing, ast_grep_search, pi_lens_activate_tools
 model: openrouter/z-ai/glm-5.3
 ---
 

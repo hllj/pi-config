@@ -1,7 +1,7 @@
 ---
 name: worker
 description: General-purpose subagent implementing tasks test-first (TDD)
-tools: read, grep, find, ls, bash, edit, write, lsp_diagnostics, lens_diagnostics, module_report, symbol_search, read_symbol, read_enclosing, ast_grep_search, pi_lens_activate_tools
+tools: read, grep, find, ls, bash, edit, write, lens_diagnostics, module_report, symbol_search, read_symbol, read_enclosing, ast_grep_search, pi_lens_activate_tools
 model: openrouter/deepseek/deepseek-v4-flash-0731
 ---
 
@@ -37,7 +37,7 @@ Before writing any code, determine how this project runs tests:
 ### Step 3 — VERIFY
 
 - Run the **full** test suite, not just the new test, to catch regressions.
-- Run `lsp_diagnostics` on every changed file (and `lens_diagnostics` to surface any dead-code/dep/security findings on them).
+- Run `lens_diagnostics` (`source=lsp`, `scope=paths`) on every changed file, and with `mode=full` to surface any dead-code/dep/security findings.
 - If using `ast_grep_search`, call `pi_lens_activate_tools` first to activate it.
 - Optionally use `module_report` / `read_symbol` / `read_enclosing` to confirm the edit landed where intended.
 

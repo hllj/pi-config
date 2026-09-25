@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Creates implementation plans from context and requirements using pi-lens code intelligence
-tools: read, grep, find, ls, web_search, web_fetch, project_report, module_report, symbol_search, lsp_diagnostics, read_enclosing, read_symbol, question, questionnaire, todo
+tools: read, grep, find, ls, web_search, web_fetch, project_report, module_report, symbol_search, lens_diagnostics, read_enclosing, read_symbol, question, questionnaire, todo
 model: openrouter/z-ai/glm-5.3
 ---
 

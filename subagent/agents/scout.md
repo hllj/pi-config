@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Fast codebase recon using pi-lens code intelligence — project orientation, symbol search, module deep-dives, and LSP diagnostics
-tools: read, grep, find, ls, bash, web_search, web_fetch, lsp_diagnostics, project_report, module_report, symbol_search, lsp_navigation, read_enclosing, read_symbol, ast_grep_search, pi_lens_activate_tools
+tools: read, grep, find, ls, bash, web_search, web_fetch, lens_diagnostics, project_report, module_report, symbol_search, lsp_navigation, read_enclosing, read_symbol, ast_grep_search, pi_lens_activate_tools
 model: openrouter/deepseek/deepseek-v4-flash-0731
 ---
 

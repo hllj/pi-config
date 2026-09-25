@@ -29,7 +29,7 @@ The harness ships these agents (see the live catalog with `list_agents`):
 | `scout` | deepseek-v4-flash | Fast read-only recon w/ pi-lens | No |
 | `planner` | glm-5.3 | Implementation plan (no changes) | No |
 | `worker` | deepseek-v4-flash | Test-first (TDD) implementation | Yes |
-| `reviewer` | glm-5.3 | Code review w/ `lsp_diagnostics` | No (read-only bash) |
+| `reviewer` | glm-5.3 | Code review w/ `lens_diagnostics` | No (read-only bash) |
 | `general` | session model | All-rounder fallback | Yes |
 | `evidence-auditor` | glm-5.3 | Audits one claim against sources — supported/contradicted/unclear/missing-evidence | No |
 
