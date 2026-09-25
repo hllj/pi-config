@@ -76,6 +76,7 @@ Treat it as a starting point, not a drop-in — it names this repo's own agents 
 | --- | --- | --- | --- |
 | `subagent/` | bundled extension | `dispatch_agent`, `run_workflow`, `resume_workflow`, `send_message`/`get_messages`, `list_subagent_sessions`, `get_subagent_session`, `/runs`, `/watchdog` | Delegate work to isolated child `pi` processes — 6 agent roles, single/parallel/chain/workflow dispatch, persistent run store, opt-in in-session watchdog |
 | `dev-workflows.ts` | root extension | `run_dev_workflow`, `/dev <type> <topic>`, `/dev-auto` | Preset multi-agent pipelines: `swat`/`bugfix`/`refactor`/`explore` |
+| `start-of-task-gate.ts` | root extension | `/start-gate` | Holds the session's first `edit`/`write` once (default on) with a skill-scan + delegation checklist, unless a `SKILL.md` was read or work was delegated first |
 | `verify-guard.ts` | root extension | `/verify-guard` | Advisory nudge when a turn edits files but runs no verification (`run_test`/`lsp_diagnostics`/`lens_diagnostics`/a check command) |
 | `plan-mode/` | bundled extension | `/plan`, `/plan-todos`, Ctrl+Alt+P | Plan-then-code mode |
 | `learning/` | bundled extension | `learn` tool, `/learn` | Captures & fingerprints tool/subagent failures across sessions; promotes patterns repeating across ≥2 sessions into drafted skills |
@@ -118,6 +119,7 @@ See `subagent/README.md` for the full feature list, `subagent/IMPROVEMENT-PLAN.m
 ### Dev loop
 
 - **`dev-workflows.ts`** — preset multi-agent pipelines (`swat`/`bugfix`/`refactor`/`explore`) launched with one call via `run_dev_workflow` or `/dev <type> <topic>`; `/dev-auto` (opt-in) adds event-driven nudges toward using it.
+- **`start-of-task-gate.ts`** — the firm half of `AGENTS.md`'s "Start of a task": the first `edit`/`write` of a session is held once (not applied) when no `SKILL.md` was read and nothing was delegated, and the block reason lists the loaded skills (with paths) and the delegation triggers, with the files-read count. It fires at most once per session, so it can't deadlock. On by default, so it also works in fresh environments such as benchmark containers; turn it off with `/start-gate`. Subagent children are never gated.
 - **`verify-guard.ts`** — advisory nudge (opt-in, `/verify-guard`) when a turn edits files but runs no verification (`run_test`/`lsp_diagnostics`/`lens_diagnostics`/a check command). `lens_diagnostics` comes from the [`pi-lens`](https://www.npmjs.com/package/pi-lens) companion package, installed by `npm run setup:agent` (see [Setup](#setup)).
 - **`plan-mode/`** — `/plan`, `/plan-todos`, Ctrl+Alt+P: plan-then-code mode.
 - **`learning/`** — captures and fingerprints tool/subagent failures across sessions; `/learn` promotes patterns that repeat across ≥2 sessions into drafted skills.
@@ -164,6 +166,7 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── questionnaire.ts
 ├── todo.ts
 ├── trigger-compact.ts
+├── start-of-task-gate.ts
 ├── verify-guard.ts
 ├── web-tools.ts
 │
@@ -180,7 +183,7 @@ pi-config/                   (= ~/.pi/agent/extensions)
 ├── todo/                    todo-widget.ts, shared with todo.ts
 │
 ├── skills/                  on-demand deep-dive docs
-└── tests/                   root-level unit tests (dev-workflows, verify-guard, trigger-compact)
+└── tests/                   root-level unit tests (dev-workflows, verify-guard, start-of-task-gate, trigger-compact)
     └── e2e-compact.sh       opt-in live E2E for trigger-compact.ts + custom-compact.ts
 ```
 

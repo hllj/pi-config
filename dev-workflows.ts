@@ -421,9 +421,9 @@ export default function (pi: ExtensionAPI) {
 		name: "run_dev_workflow",
 		label: "Run Dev Workflow",
 		description:
-			"Run a preset development workflow (scout → planner → worker with verification/review gates) in one call. Reuses the subagent workflow engine. Pick a type and topic; the appropriate agents run in sequence.",
+			"Run a preset development workflow (scout → planner → worker with verification/review gates) in one call. Use it for a bug whose cause is still unclear after about six tool calls (bugfix), a change that spans more than one source file (swat / refactor), or mapping an unfamiliar area before editing (explore). Reuses the subagent workflow engine. Pick a type and topic; the appropriate agents run in sequence.",
 		promptSnippet:
-			"run_dev_workflow: launch a preset multi-agent pipeline (swat/bugfix/refactor/explore) with one call",
+			"run_dev_workflow: one-call multi-agent pipeline for a bug still unclear after ~6 calls (bugfix), a multi-file change (swat/refactor), or unfamiliar code (explore)",
 		promptGuidelines: [...TYPE_GUIDANCE],
 		parameters: Type.Object({
 			type: StringEnum(["swat", "bugfix", "refactor", "explore"] as const, {

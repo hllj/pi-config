@@ -3459,13 +3459,14 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate tasks to subagents with isolated context windows.",
+			"Use it when: you don't yet know which files matter or would read ~10+ files you won't need again (scout); the work splits into 3+ independent pieces (parallel tasks); or you're about to call a code change done (reviewer on your diff).",
 			"Pick the agent that fits the work: scout (recon), planner (plan), worker (TDD implementation), reviewer (review), general (all-rounder fallback). Run list_agents to see the live catalog with per-agent tools and models.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder), workflow (steps with conditions, error handlers, approval gates, parallelGroup).",
 			`Every dispatch is recorded to the on-disk run store (record.json + the child's own pi session file); inspect with list_subagent_sessions / get_subagent_session or the /runs command.`,
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
-		promptSnippet: "Delegate research, implementation, or review to an isolated subagent with its own context window",
+		promptSnippet: "Delegate to an isolated subagent: scout before reading ~10+ files, parallel tasks for 3+ independent pieces, reviewer before calling a change done",
 		promptGuidelines: [
 			"Reach for subagent (don't just default to bash/edit in the main context) when: you'd need to read/grep/explore ~10+ files whose contents you won't need again once you have the answer; the work splits into ~3+ independent pieces (different files/subsystems, multiple failing tests) that can run in parallel; or you're about to declare something done and want an unbiased second opinion — dispatch reviewer on the diff instead of grading your own work.",
 			"Don't dispatch a subagent for: a task doable in one bash command or a quick focused read; a tightly sequential chain where each step needs the full prior context (keep that in this conversation); or edits to the same file another in-flight change touches (same-file parallel edits conflict).",
