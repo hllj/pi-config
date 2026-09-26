@@ -111,6 +111,7 @@ import {
 	resolveStoreDir,
 } from "./session-store.ts";
 import { renderRunsScreen, type RunsTableRow } from "./runs-screen.ts";
+import { resolveSubagentTimeoutMs } from "./timeout.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -828,8 +829,9 @@ async function runSingleAgent<TDetails = SubagentDetails>(
 	if (agent.tools && agent.tools.length > 0)
 		args.push("--tools", agent.tools.join(","));
 
-	// Per-call timeout beats the agent frontmatter's timeoutMs.
-	const effectiveTimeout = opts.timeoutMs ?? agent.timeoutMs;
+	// Per-call timeout beats the agent frontmatter's timeoutMs, but never goes
+	// below its minTimeoutMs (see timeout.ts).
+	const effectiveTimeout = resolveSubagentTimeoutMs(opts.timeoutMs, agent);
 	// Per-call context files beat the agent frontmatter's contextFiles.
 	const effectiveContextFiles = opts.contextFiles ?? agent.contextFiles ?? [];
 
@@ -1769,7 +1771,8 @@ export async function executeWorkflowSteps(
 const TimeoutMsSchema = Type.Optional(
 	Type.Number({
 		minimum: 1000,
-		description: "Kill the subagent after this many milliseconds",
+		description:
+			"Kill the subagent after this many milliseconds. Raised to the agent's minTimeoutMs if lower; omit it to use the agent's default",
 	}),
 );
 
