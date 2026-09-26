@@ -19,6 +19,8 @@ export interface AgentConfig {
 	model?: string;
 	/** Per-agent dispatch timeout in milliseconds. Overridden by a per-call `timeoutMs`. */
 	timeoutMs?: number;
+	/** Floor for any dispatch timeout, per-call ones included (see timeout.ts). */
+	minTimeoutMs?: number;
 	/** Extended-thinking level to request for this agent (advisory; only pushed when no explicit model is set). */
 	thinking?: string;
 	/** Advisory sampling temperature. pi has no CLI flag, so it becomes a prompt-level directive. */
@@ -53,6 +55,7 @@ type AgentFrontmatter = {
 	tools?: unknown;
 	model?: unknown;
 	timeoutMs?: unknown;
+	minTimeoutMs?: unknown;
 	thinking?: unknown;
 	temperature?: unknown;
 	env?: unknown;
@@ -183,6 +186,7 @@ function loadAgentsFromDir(
 			tools: parseToolList(frontmatter.tools),
 			model: parseOptionalString(frontmatter.model),
 			timeoutMs: parseOptionalNumber(frontmatter.timeoutMs),
+			minTimeoutMs: parseOptionalNumber(frontmatter.minTimeoutMs),
 			thinking: parseOptionalString(frontmatter.thinking),
 			temperature: parseOptionalNumber(frontmatter.temperature),
 			env: parseEnvRecord(frontmatter.env),

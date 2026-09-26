@@ -51,3 +51,6 @@ node unit.test.mjs
 # Live workflow widget rendering lives in workflow-widget.ts (dependency-free,
 # bare workspace) — run it from the same entry point so it's always covered.
 "$SCRIPT_DIR/run-widget.sh"
+
+# Subagent timeout resolution (timeout.ts, dependency-free, bare workspace).
+"$SCRIPT_DIR/run-timeout.sh"

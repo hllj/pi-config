@@ -80,6 +80,7 @@ When omitted, the subagent inherits the dispatching session's active model and t
 | Field | Type | Effect |
 | ----- | ---- | ------ |
 | `timeoutMs` | number | Kill the subagent after this many ms (SIGTERM → SIGKILL). Per-call `timeoutMs` overrides. |
+| `minTimeoutMs` | number | Floor for the effective timeout: a lower per-call (or frontmatter) `timeoutMs` is raised to it. Stops a dispatcher from killing a slow-turn agent mid-thought. |
 | `thinking` | string | Request a specific thinking level (e.g. `high`). Pushed via `--thinking` when the agent has no explicit `model`. |
 | `temperature` | number | Advisory only — pi has no CLI flag, so it becomes a prompt-level directive. |
 | `env` | map | Extra environment variables merged over `process.env` when spawning. |
